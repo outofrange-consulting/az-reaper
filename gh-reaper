@@ -1,35 +1,488 @@
 #!/usr/bin/env bash
-set -e
+#
+# gh-reaper - GitHub CLI extension that harvests stale git worktrees
+# Version: 1.0.0
+# https://github.com/ai-ecoverse/gh-reaper
+#
+# Seasons don't fear the reaper. Nor do your forgotten worktrees -- until now.
+# Scans a curated set of developer directories for linked git worktrees,
+# reports how long they've been gathering dust and how much disk they hold,
+# then offers to reap the ones you've left behind.
 
-echo "Hello gh-reaper!"
+set -euo pipefail
 
-# Snippets to help get started:
+VERSION="1.0.0"
+EXTENSION_NAME="gh-reaper"
 
-# Determine if an executable is in the PATH
-# if ! type -p ruby >/dev/null; then
-#   echo "Ruby not found on the system" >&2
-#   exit 1
-# fi
+# ---------------------------------------------------------------------------
+# Dependencies
+# ---------------------------------------------------------------------------
+check_dependencies() {
+    local missing=()
+    command -v git  >/dev/null 2>&1 || missing+=("git")
+    command -v find >/dev/null 2>&1 || missing+=("find")
+    command -v du   >/dev/null 2>&1 || missing+=("du")
+    command -v stat >/dev/null 2>&1 || missing+=("stat")
+    if [ ${#missing[@]} -ne 0 ]; then
+        echo "Error: missing required dependencies:" >&2
+        printf '  - %s\n' "${missing[@]}" >&2
+        exit 1
+    fi
+}
 
-# Pass arguments through to another command
-# gh issue list "$@" -R cli/cli
+# ---------------------------------------------------------------------------
+# Colors (TTY + NO_COLOR aware)
+# ---------------------------------------------------------------------------
+setup_colors() {
+    if [ "${opt_color}" = 1 ] && [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+        C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
+        C_RED=$'\033[31m'; C_YELLOW=$'\033[33m'; C_GREEN=$'\033[32m'
+        C_CYAN=$'\033[36m'
+    else
+        C_RESET=''; C_BOLD=''; C_DIM=''
+        C_RED=''; C_YELLOW=''; C_GREEN=''; C_CYAN=''
+    fi
+}
 
-# Using the gh api command to retrieve and format information
-# QUERY='
-#   query($endCursor: String) {
-#     viewer {
-#       repositories(first: 100, after: $endCursor) {
-#         nodes {
-#           nameWithOwner
-#           stargazerCount
-#         }
-#       }
-#     }
-#   }
-# '
-# TEMPLATE='
-#   {{- range $repo := .data.viewer.repositories.nodes -}}
-#     {{- printf "name: %s - stargazers: %v\n" $repo.nameWithOwner $repo.stargazerCount -}}
-#   {{- end -}}
-# '
-# exec gh api graphql -f query="${QUERY}" --paginate --template="${TEMPLATE}"
+# ---------------------------------------------------------------------------
+# Help / version
+# ---------------------------------------------------------------------------
+show_version() {
+    echo "${EXTENSION_NAME} version ${VERSION}"
+}
+
+show_help() {
+    cat <<EOF
+${C_BOLD}gh reaper${C_RESET} - harvest stale git worktrees
+
+  ${C_DIM}"All our times have come / Here but now they're gone"${C_RESET}
+
+USAGE:
+  gh reaper [OPTIONS] [PATH...]
+
+DESCRIPTION:
+  Scans your developer directories for linked git worktrees, shows when each
+  was last touched and how much disk it occupies (oldest first), then offers
+  to reap the ones you've forgotten. By default it only walks well-known code
+  roots so it stays fast and never trips macOS privacy (TCC) prompts for
+  Desktop, Documents, Downloads, Photos, and friends.
+
+OPTIONS:
+  -d, --min-age DAYS   Only show worktrees untouched for at least DAYS (default: 0)
+  -s, --min-size MB    Only show worktrees at least MB megabytes in size (default: 0)
+  -p, --path DIR       Add a scan root (repeatable; also accepted as PATH args)
+  -a, --all            Scan all of \$HOME (still skips TCC-protected dirs)
+      --dry-run        List only; never remove anything
+  -y, --yes            Reap every matching worktree without prompting
+  -f, --force          Allow reaping dirty, unpushed, or orphaned worktrees
+      --prune          Run 'git worktree prune' on touched repos afterward
+      --json           Emit results as JSON (implies --dry-run)
+      --no-color       Disable colored output
+  -v, --version        Show version
+  -h, --help           Show this help
+
+STATUS FLAGS:
+  ${C_GREEN}clean${C_RESET}      No local changes; HEAD exists on a remote -- safe to reap
+  ${C_YELLOW}dirty${C_RESET}      Uncommitted or untracked changes present
+  ${C_YELLOW}unpushed${C_RESET}   Commits that exist nowhere on a remote
+  ${C_RED}orphan${C_RESET}     Main repository is gone; only the checkout remains
+
+EXAMPLES:
+  # Survey forgotten worktrees in your usual code dirs
+  gh reaper
+
+  # Anything untouched for 30+ days and bigger than 100 MB
+  gh reaper --min-age 30 --min-size 100
+
+  # Scan a specific spot and reap interactively
+  gh reaper ~/work/monorepo
+
+  # Reap everything 2+ weeks old, no questions asked
+  gh reaper --min-age 14 --yes
+
+  # Machine-wide sweep, just look (no deletion)
+  gh reaper --all --dry-run
+
+More cowbell: https://github.com/ai-ecoverse/gh-reaper
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Defaults / option state
+# ---------------------------------------------------------------------------
+opt_min_age_days=0
+opt_min_size_mb=0
+opt_all=0
+opt_dry_run=0
+opt_yes=0
+opt_force=0
+opt_prune=0
+opt_json=0
+opt_color=1
+extra_roots=()
+
+parse_args() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -d|--min-age) opt_min_age_days="${2:?--min-age needs a value}"; shift 2 ;;
+            -s|--min-size) opt_min_size_mb="${2:?--min-size needs a value}"; shift 2 ;;
+            -p|--path) extra_roots+=("${2:?--path needs a value}"); shift 2 ;;
+            -a|--all) opt_all=1; shift ;;
+            --dry-run) opt_dry_run=1; shift ;;
+            -y|--yes) opt_yes=1; shift ;;
+            -f|--force) opt_force=1; shift ;;
+            --prune) opt_prune=1; shift ;;
+            --json) opt_json=1; opt_dry_run=1; shift ;;
+            --no-color) opt_color=0; shift ;;
+            -v|--version) opt_color=0; setup_colors; show_version; exit 0 ;;
+            -h|--help) setup_colors; show_help; exit 0 ;;
+            --) shift; while [ $# -gt 0 ]; do extra_roots+=("$1"); shift; done ;;
+            -*) echo "Error: unknown option '$1' (try --help)" >&2; exit 1 ;;
+            *) extra_roots+=("$1"); shift ;;
+        esac
+    done
+
+    case "$opt_min_age_days" in *[!0-9]*) echo "Error: --min-age must be a whole number" >&2; exit 1 ;; esac
+    case "$opt_min_size_mb"  in *[!0-9]*) echo "Error: --min-size must be a whole number" >&2; exit 1 ;; esac
+}
+
+# ---------------------------------------------------------------------------
+# Portable mtime (epoch seconds)
+# ---------------------------------------------------------------------------
+file_mtime() {
+    local f="$1"
+    if [ "$STAT_GNU" = 1 ]; then
+        stat -c %Y "$f" 2>/dev/null || echo 0
+    else
+        stat -f %m "$f" 2>/dev/null || echo 0
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Human-readable helpers
+# ---------------------------------------------------------------------------
+human_size_kb() {
+    local kb="$1"
+    if   [ "$kb" -ge 1048576 ]; then awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}'
+    elif [ "$kb" -ge 1024 ];    then awk -v k="$kb" 'BEGIN{printf "%.1fM", k/1024}'
+    else printf '%dK' "$kb"; fi
+}
+
+human_age() {
+    local secs="$1" d
+    [ "$secs" -lt 0 ] && secs=0
+    d=$(( secs / 86400 ))
+    if   [ "$d" -ge 365 ]; then printf '%dy'  $(( d / 365 ))
+    elif [ "$d" -ge 30 ];  then printf '%dmo' $(( d / 30 ))
+    elif [ "$d" -ge 1 ];   then printf '%dd'  "$d"
+    else printf '%dh' $(( secs / 3600 )); fi
+}
+
+# Replace $HOME prefix with ~ for display
+tilde() {
+    local p="$1"
+    case "$p" in
+        "$HOME"/*) printf '~%s' "${p#"$HOME"}" ;;
+        "$HOME")   printf '~' ;;
+        *)         printf '%s' "$p" ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Scan roots
+# ---------------------------------------------------------------------------
+# Directories that trigger macOS TCC permission dialogs or are pure noise.
+# Always pruned, even under --all.
+TCC_DENY=(
+    "$HOME/Library" "$HOME/Desktop" "$HOME/Documents" "$HOME/Downloads"
+    "$HOME/Pictures" "$HOME/Movies" "$HOME/Music" "$HOME/Public"
+    "$HOME/.Trash" "$HOME/Applications"
+    "/Volumes" "/System" "/private" "/Network" "/cores" "/Library"
+)
+
+resolve_roots() {
+    local candidates=()
+    local r
+    # Explicit paths win and skip the curated/TCC logic.
+    if [ ${#extra_roots[@]} -gt 0 ]; then
+        for r in "${extra_roots[@]}"; do candidates+=("$r"); done
+    elif [ "$opt_all" = 1 ]; then
+        candidates+=("$HOME")
+    else
+        # Curated, fast, TCC-safe defaults -- only the ones that exist.
+        local maybe=(
+            "$PWD"
+            "$HOME/Developer" "$HOME/Projects" "$HOME/projects"
+            "$HOME/Code" "$HOME/code" "$HOME/src" "$HOME/Source"
+            "$HOME/dev" "$HOME/Dev" "$HOME/git" "$HOME/repos" "$HOME/Repositories"
+            "$HOME/work" "$HOME/workspace" "$HOME/Workspace"
+            "$HOME/conductor" "$HOME/.conductor"
+            "$HOME/worktrees" "$HOME/.worktrees"
+            "$HOME/go/src"
+        )
+        for r in "${maybe[@]}"; do [ -d "$r" ] && candidates+=("$r"); done
+    fi
+
+    # Normalize, dedupe, drop nonexistent.
+    local seen=" "
+    for r in "${candidates[@]}"; do
+        [ -d "$r" ] || continue
+        r="$(cd "$r" 2>/dev/null && pwd)" || continue
+        case "$seen" in *" $r "*) continue ;; esac
+        seen="$seen$r "
+        printf '%s\n' "$r"
+    done
+}
+
+# Emit '.git' worktree-marker files under a root, pruning heavy / protected dirs.
+find_git_markers() {
+    local root="$1"
+    local prune=()
+    local d
+    for d in "${TCC_DENY[@]}"; do prune+=( -path "$d" -o ); done
+    find "$root" \
+        \( "${prune[@]}" \
+           -type d \( -name node_modules -o -name .git -o -name .Trash \
+                      -o -name Library -o -name .cache -o -name Caches \
+                      -o -name .npm -o -name .pnpm-store -o -name .yarn \
+                      -o -name .venv -o -name venv -o -name .tox \
+                      -o -name .gradle -o -name .terraform -o -name .next \
+                      -o -name DerivedData -o -name Pods -o -name '*.noindex' \) \
+        \) -prune -o \
+        -type f -name .git -print 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# Inspect one worktree marker; append a record to RECORDS on success.
+# Record fields (tab-separated): touched  kb  branch  status  path  main
+# ---------------------------------------------------------------------------
+inspect_marker() {
+    local gitfile="$1" wt line gitdir
+    wt="$(dirname "$gitfile")"
+
+    IFS= read -r line < "$gitfile" 2>/dev/null || return 0
+    case "$line" in gitdir:*) gitdir="${line#gitdir: }" ;; *) return 0 ;; esac
+    # Only worktrees -- not submodules ('.../modules/...').
+    case "$gitdir" in */worktrees/*) ;; *) return 0 ;; esac
+    # Resolve a relative gitdir against the worktree.
+    case "$gitdir" in /*) ;; *) gitdir="$wt/$gitdir" ;; esac
+
+    # "Last touched" from signals git's *read* commands never rewrite:
+    # the working-dir mtime, the reflog (logs/HEAD), and the last commit date.
+    # (The index is deliberately ignored -- `git status` rewrites it, which
+    # would reset a worktree's apparent age every time we inspect it.)
+    local kb touched dir_m logs_m branch status main
+    # No pipe into an early-exit filter here: on a big tree `du` is still
+    # writing when the reader quits, and SIGPIPE + pipefail would kill us.
+    kb="$(du -sk "$wt" 2>/dev/null)" || kb=""
+    kb="${kb%%[[:space:]]*}"; : "${kb:=0}"
+    dir_m="$(file_mtime "$wt")"
+    logs_m="$(file_mtime "$gitdir/logs/HEAD")"
+    touched="$dir_m"
+    [ "$logs_m" -gt "$touched" ] && touched="$logs_m"
+
+    if git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        local commit_ct ahead up
+        commit_ct="$(git -C "$wt" log -1 --format=%ct 2>/dev/null || echo 0)"
+        [ "${commit_ct:-0}" -gt "$touched" ] && touched="$commit_ct"
+
+        branch="$(git -C "$wt" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+        [ -z "$branch" ] && branch="detached@$(git -C "$wt" rev-parse --short HEAD 2>/dev/null || echo '?')"
+
+        status="clean"
+        if [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then
+            status="dirty"
+        fi
+        # Unpushed = commits that live nowhere on a remote.
+        if up="$(git -C "$wt" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)"; then
+            ahead="$(git -C "$wt" rev-list --count "${up}..HEAD" 2>/dev/null || echo 0)"
+            if [ "${ahead:-0}" -gt 0 ]; then
+                [ "$status" = clean ] && status="unpushed" || status="$status unpushed"
+            fi
+        elif [ -z "$(git -C "$wt" branch -r --contains HEAD 2>/dev/null)" ]; then
+            [ "$status" = clean ] && status="unpushed" || status="$status unpushed"
+        fi
+
+        # First porcelain line is "worktree <main-path>"; parse without a pipe.
+        main="$(git -C "$wt" worktree list --porcelain 2>/dev/null)" || main=""
+        main="${main%%$'\n'*}"; main="${main#worktree }"
+        [ -z "$main" ] && main="$wt"
+    else
+        # Git can't operate -> the main repo is gone.
+        status="orphan"
+        branch="?"
+        if [ -r "$gitdir/HEAD" ]; then
+            IFS= read -r line < "$gitdir/HEAD" 2>/dev/null || line=""
+            branch="${line#ref: refs/heads/}"
+        fi
+        main=""
+    fi
+
+    RECORDS+=("$touched"$'\t'"$kb"$'\t'"$branch"$'\t'"$status"$'\t'"$wt"$'\t'"$main")
+}
+
+# ---------------------------------------------------------------------------
+# Reaping
+# ---------------------------------------------------------------------------
+is_risky() { case "$1" in *dirty*|*unpushed*|*orphan*) return 0 ;; *) return 1 ;; esac; }
+
+reap_one() {
+    local wt="$1" main="$2" status="$3"
+    if [ "$status" = "orphan" ] || [ -z "$main" ]; then
+        rm -rf "$wt"
+        return $?
+    fi
+    local args=(worktree remove)
+    case "$status" in *dirty*|*unpushed*) args+=(--force) ;; esac
+    args+=("$wt")
+    git -C "$main" "${args[@]}" 2>&1
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+main() {
+    parse_args "$@"
+    setup_colors
+
+    if stat --version >/dev/null 2>&1; then STAT_GNU=1; else STAT_GNU=0; fi
+
+    local NOW; NOW="$(date +%s)"
+    local min_age_secs=$(( opt_min_age_days * 86400 ))
+    local min_kb=$(( opt_min_size_mb * 1024 ))
+
+    # ---- discover ----
+    local roots=(); local root
+    while IFS= read -r root; do roots+=("$root"); done < <(resolve_roots)
+    if [ ${#roots[@]} -eq 0 ]; then
+        echo "No scannable directories found. Pass a PATH or use --all." >&2
+        exit 1
+    fi
+
+    if [ "$opt_json" = 0 ]; then
+        printf '%s%s: scanning %d root(s)...%s\n' \
+            "$C_DIM" "$EXTENSION_NAME" "${#roots[@]}" "$C_RESET" >&2
+    fi
+
+    RECORDS=()
+    local marker seen_markers=" "
+    for root in "${roots[@]}"; do
+        while IFS= read -r marker; do
+            [ -n "$marker" ] || continue
+            case "$seen_markers" in *" $marker "*) continue ;; esac
+            seen_markers="$seen_markers$marker "
+            inspect_marker "$marker"
+        done < <(find_git_markers "$root")
+    done
+
+    # ---- filter + sort (oldest first) ----
+    local filtered=()
+    local rec touched kb branch status path main age
+    for rec in "${RECORDS[@]:-}"; do
+        [ -n "$rec" ] || continue
+        IFS=$'\t' read -r touched kb branch status path main <<<"$rec"
+        age=$(( NOW - touched ))
+        [ "$age" -lt "$min_age_secs" ] && continue
+        [ "$kb" -lt "$min_kb" ] && continue
+        filtered+=("$rec")
+    done
+
+    if [ ${#filtered[@]} -eq 0 ]; then
+        if [ "$opt_json" = 1 ]; then echo "[]"; else
+            printf '%sNothing to reap.%s The fields are clean.\n' "$C_GREEN" "$C_RESET"
+        fi
+        exit 0
+    fi
+
+    # Sort ascending by touched epoch (first field).
+    local sorted=()
+    while IFS= read -r rec; do sorted+=("$rec"); done < <(printf '%s\n' "${filtered[@]}" | sort -t$'\t' -k1,1n)
+
+    # ---- JSON output ----
+    if [ "$opt_json" = 1 ]; then
+        printf '%s\n' "${sorted[@]}" | jq -R -s --argjson now "$NOW" '
+            split("\n") | map(select(length>0)) | map(split("\t")) |
+            map({
+              path: .[4], branch: .[2], status: .[3],
+              sizeKb: (.[1]|tonumber),
+              touched: (.[0]|tonumber),
+              ageDays: (($now - (.[0]|tonumber)) / 86400 | floor),
+              mainWorktree: .[5]
+            })'
+        exit 0
+    fi
+
+    # ---- table ----
+    local total_kb=0
+    printf '\n%s%-6s %8s  %-14s %-22s %s%s\n' "$C_BOLD" "AGE" "SIZE" "STATUS" "BRANCH" "PATH" "$C_RESET"
+    for rec in "${sorted[@]}"; do
+        IFS=$'\t' read -r touched kb branch status path main <<<"$rec"
+        age=$(( NOW - touched ))
+        total_kb=$(( total_kb + kb ))
+        local color="$C_DIM"
+        case "$status" in
+            *orphan*)            color="$C_RED" ;;
+            *dirty*|*unpushed*)  color="$C_YELLOW" ;;
+            clean)               color="$C_GREEN" ;;
+        esac
+        local br="$branch"; [ ${#br} -gt 22 ] && br="${br:0:21}…"
+        printf '%s%-6s %8s  %-14s %-22s %s%s\n' \
+            "$color" "$(human_age "$age")" "$(human_size_kb "$kb")" \
+            "$status" "$br" "$(tilde "$path")" "$C_RESET"
+    done
+    printf '%s%d worktree(s), %s total%s\n\n' \
+        "$C_DIM" "${#sorted[@]}" "$(human_size_kb "$total_kb")" "$C_RESET"
+
+    if [ "$opt_dry_run" = 1 ]; then exit 0; fi
+
+    # ---- reap ----
+    local reap_all="$opt_yes" reaped=0 freed_kb=0 ans out
+    local touched_mains=()
+    for rec in "${sorted[@]}"; do
+        IFS=$'\t' read -r touched kb branch status path main <<<"$rec"
+
+        if is_risky "$status" && [ "$opt_force" != 1 ]; then
+            printf '%s skip%s %s %s(%s -- needs --force)%s\n' \
+                "$C_YELLOW" "$C_RESET" "$(tilde "$path")" "$C_DIM" "$status" "$C_RESET"
+            continue
+        fi
+
+        if [ "$reap_all" != 1 ]; then
+            printf 'Reap %s%s%s [%s, %s, %s]? [y/N/a/q] ' \
+                "$C_CYAN" "$(tilde "$path")" "$C_RESET" \
+                "$(human_age $(( NOW - touched )))" "$(human_size_kb "$kb")" "$status"
+            read -r ans </dev/tty || ans="q"
+            case "$ans" in
+                y|Y) ;;
+                a|A) reap_all=1 ;;
+                q|Q) echo "Stopped."; break ;;
+                *)   continue ;;
+            esac
+        fi
+
+        if out="$(reap_one "$path" "$main" "$status")"; then
+            printf '%s reaped%s %s\n' "$C_GREEN" "$C_RESET" "$(tilde "$path")"
+            reaped=$(( reaped + 1 ))
+            freed_kb=$(( freed_kb + kb ))
+            [ -n "$main" ] && touched_mains+=("$main")
+        else
+            printf '%s failed%s %s\n  %s%s%s\n' \
+                "$C_RED" "$C_RESET" "$(tilde "$path")" "$C_DIM" "$out" "$C_RESET"
+        fi
+    done
+
+    if [ "$opt_prune" = 1 ] && [ ${#touched_mains[@]} -gt 0 ]; then
+        local m seen=" "
+        for m in "${touched_mains[@]}"; do
+            case "$seen" in *" $m "*) continue ;; esac
+            seen="$seen$m "
+            git -C "$m" worktree prune 2>/dev/null || true
+        done
+    fi
+
+    printf '\n%sReaped %d worktree(s), reclaimed %s.%s\n' \
+        "$C_BOLD" "$reaped" "$(human_size_kb "$freed_kb")" "$C_RESET"
+}
+
+check_dependencies
+main "$@"

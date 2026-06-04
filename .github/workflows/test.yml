@@ -1,0 +1,45 @@
+name: Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install dependencies (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y jq shellcheck
+
+    - name: Install dependencies (macOS)
+      if: matrix.os == 'macos-latest'
+      run: brew install jq shellcheck
+
+    - name: Run shellcheck
+      run: shellcheck --severity=warning gh-reaper
+
+    - name: Run test suite
+      run: |
+        chmod +x tests/test.sh
+        tests/test.sh
+
+    - name: Verify script structure
+      run: |
+        head -n 1 gh-reaper | grep -q "#!/usr/bin/env bash" || { echo "Bad shebang"; exit 1; }
+        grep -q "^set -euo pipefail" gh-reaper || { echo "Missing 'set -euo pipefail'"; exit 1; }
+        grep -q 'VERSION=' gh-reaper || { echo "Missing VERSION"; exit 1; }
+        grep -q 'EXTENSION_NAME=' gh-reaper || { echo "Missing EXTENSION_NAME"; exit 1; }
+        grep -q "check_dependencies" gh-reaper || { echo "Missing check_dependencies"; exit 1; }
+        echo "All structural checks passed!"

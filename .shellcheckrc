@@ -1,0 +1,5 @@
+# ShellCheck configuration for gh-reaper
+severity=warning
+enable=all
+shell=bash
+external-sources=true

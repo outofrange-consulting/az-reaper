@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y jq shellcheck
+
+    - name: Run shellcheck
+      run: shellcheck --severity=warning gh-reaper
+
+    - name: Run tests
+      run: |
+        chmod +x tests/test.sh
+        tests/test.sh
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Create Release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: Release ${{ github.ref }}
+        body: |
+          ## Installation
+
+          ```bash
+          gh extension install ai-ecoverse/gh-reaper
+          ```
+
+          ## Upgrade
+
+          ```bash
+          gh extension upgrade reaper
+          ```
+
+          See the [README](https://github.com/ai-ecoverse/gh-reaper) for full documentation.
+
+          ### Requirements
+
+          - `git`
+          - `find`, `du`, `stat`, `awk` (standard on macOS and Linux)
+          - `jq` (only for `--json`)
+          - Bash 4.0 or higher
+        draft: false
+        prerelease: false
