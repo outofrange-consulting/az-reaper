@@ -3,6 +3,15 @@
 All notable changes to `gh-reaper` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.3.0] - 2026-06-04
+
+### Added
+- Scan Codex's worktree pool by default: `~/.codex/worktrees/<id>/<repo>` is now a
+  default root. Codex creates these on demand in the home dotdir (not nested under a
+  code root), so it needs an explicit root — unlike Claude Code, whose
+  `<repo>/.claude/worktrees/<slug>` checkouts are already discovered inside scanned
+  repos.
+
 ## [1.2.0] - 2026-06-04
 
 ### Added
