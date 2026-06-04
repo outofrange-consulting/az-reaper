@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # gh-reaper - GitHub CLI extension that harvests stale git worktrees
-# Version: 1.1.0
+# Version: 1.2.0
 # https://github.com/ai-ecoverse/gh-reaper
 #
 # Seasons don't fear the reaper. Nor do your forgotten worktrees -- until now.
@@ -11,8 +11,24 @@
 
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 EXTENSION_NAME="gh-reaper"
+
+# Absolute path to this script, so we can re-invoke ourselves as parallel
+# inspection workers (see the --__inspect dispatch at the bottom).
+SELF_PATH="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/$(basename "$0")"
+
+# Default parallelism = online CPU count (capped), overridable with --jobs.
+detect_jobs() {
+    local n
+    n="$(getconf _NPROCESSORS_ONLN 2>/dev/null \
+         || sysctl -n hw.ncpu 2>/dev/null \
+         || nproc 2>/dev/null || echo 4)"
+    case "$n" in *[!0-9]*|'') n=4 ;; esac
+    [ "$n" -gt 16 ] && n=16
+    [ "$n" -lt 1 ] && n=1
+    echo "$n"
+}
 
 # ---------------------------------------------------------------------------
 # Dependencies
@@ -73,6 +89,7 @@ OPTIONS:
   -d, --min-age DAYS   Only show worktrees untouched for at least DAYS (default: 0)
   -s, --min-size MB    Only show worktrees at least MB megabytes in size (default: 0)
   -p, --path DIR       Add a scan root (repeatable; also accepted as PATH args)
+  -j, --jobs N         Parallel inspection workers (default: CPU count; 1 = serial)
   -a, --all            Scan all of \$HOME (still skips TCC-protected dirs)
   -y, --yes            With --reap, delete without prompting for each worktree
   -f, --force          With --reap, also remove dirty, unpushed, or orphaned worktrees
@@ -114,6 +131,7 @@ EOF
 # ---------------------------------------------------------------------------
 opt_min_age_days=0
 opt_min_size_mb=0
+opt_jobs=""
 opt_all=0
 opt_reap=0
 opt_dry_run=0
@@ -130,6 +148,7 @@ parse_args() {
             -r|--reap) opt_reap=1; shift ;;
             -d|--min-age) opt_min_age_days="${2:?--min-age needs a value}"; shift 2 ;;
             -s|--min-size) opt_min_size_mb="${2:?--min-size needs a value}"; shift 2 ;;
+            -j|--jobs) opt_jobs="${2:?--jobs needs a value}"; shift 2 ;;
             -p|--path) extra_roots+=("${2:?--path needs a value}"); shift 2 ;;
             -a|--all) opt_all=1; shift ;;
             --dry-run) opt_dry_run=1; shift ;;
@@ -148,6 +167,10 @@ parse_args() {
 
     case "$opt_min_age_days" in *[!0-9]*) echo "Error: --min-age must be a whole number" >&2; exit 1 ;; esac
     case "$opt_min_size_mb"  in *[!0-9]*) echo "Error: --min-size must be a whole number" >&2; exit 1 ;; esac
+    if [ -n "$opt_jobs" ]; then
+        case "$opt_jobs" in *[!0-9]*) echo "Error: --jobs must be a whole number" >&2; exit 1 ;; esac
+        [ "$opt_jobs" -lt 1 ] && { echo "Error: --jobs must be 1 or more" >&2; exit 1; }
+    fi
 
     # Read-only modes win over --reap, so habit and scripts can't delete by surprise.
     if [ "$opt_dry_run" = 1 ] || [ "$opt_json" = 1 ]; then opt_reap=0; fi
@@ -327,7 +350,7 @@ inspect_marker() {
         main=""
     fi
 
-    RECORDS+=("$touched"$'\t'"$kb"$'\t'"$branch"$'\t'"$status"$'\t'"$wt"$'\t'"$main")
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$touched" "$kb" "$branch" "$status" "$wt" "$main"
 }
 
 # ---------------------------------------------------------------------------
@@ -368,21 +391,40 @@ main() {
         exit 1
     fi
 
-    if [ "$opt_json" = 0 ]; then
-        printf '%s%s: scanning %d root(s)...%s\n' \
-            "$C_DIM" "$EXTENSION_NAME" "${#roots[@]}" "$C_RESET" >&2
-    fi
+    local jobs="${opt_jobs:-$(detect_jobs)}"
 
-    RECORDS=()
-    local marker seen_markers=" "
+    # ---- collect unique worktree markers across all roots ----
+    local markers=() marker seen_markers=" "
     for root in "${roots[@]}"; do
         while IFS= read -r marker; do
             [ -n "$marker" ] || continue
             case "$seen_markers" in *" $marker "*) continue ;; esac
             seen_markers="$seen_markers$marker "
-            inspect_marker "$marker"
+            markers+=("$marker")
         done < <(find_git_markers "$root")
     done
+
+    if [ "$opt_json" = 0 ]; then
+        printf '%s%s: inspecting %d worktree(s) across %d root(s), %d job(s)...%s\n' \
+            "$C_DIM" "$EXTENSION_NAME" "${#markers[@]}" "${#roots[@]}" "$jobs" "$C_RESET" >&2
+    fi
+
+    # ---- inspect markers in parallel ----
+    # Each worker (a re-invocation of this script) appends finished records to
+    # its own per-PID temp file, so output never interleaves and we don't rely
+    # on pipe write-atomicity. The slow part (du + git per worktree) now runs
+    # `jobs`-wide instead of serially.
+    RECORDS=()
+    if [ ${#markers[@]} -gt 0 ]; then
+        local outdir rec_line
+        outdir="$(mktemp -d)"
+        printf '%s\0' "${markers[@]}" \
+            | REAPER_OUT_DIR="$outdir" xargs -0 -P "$jobs" -n 16 "$SELF_PATH" --__inspect 2>/dev/null || true
+        while IFS= read -r rec_line; do
+            [ -n "$rec_line" ] && RECORDS+=("$rec_line")
+        done < <(cat "$outdir"/*.tsv 2>/dev/null)
+        rm -rf "$outdir"
+    fi
 
     # ---- filter + sort (oldest first) ----
     local filtered=()
@@ -501,6 +543,24 @@ main() {
     printf '\n%sReaped %d worktree(s), reclaimed %s.%s\n' \
         "$C_BOLD" "$reaped" "$(human_size_kb "$freed_kb")" "$C_RESET"
 }
+
+# Internal parallel-inspection worker (not a public interface). main() re-invokes
+# this script via xargs as `gh-reaper --__inspect <marker>...`; each call writes
+# one TSV record per valid worktree to $REAPER_OUT_DIR/$$.tsv (or stdout).
+if [ "${1:-}" = "--__inspect" ]; then
+    if stat --version >/dev/null 2>&1; then STAT_GNU=1; else STAT_GNU=0; fi
+    shift
+    for __m in "$@"; do
+        __rec="$(inspect_marker "$__m" 2>/dev/null)" || __rec=""
+        [ -n "$__rec" ] || continue
+        if [ -n "${REAPER_OUT_DIR:-}" ]; then
+            printf '%s\n' "$__rec" >> "$REAPER_OUT_DIR/$$.tsv"
+        else
+            printf '%s\n' "$__rec"
+        fi
+    done
+    exit 0
+fi
 
 check_dependencies
 main "$@"

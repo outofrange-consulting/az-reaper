@@ -3,6 +3,18 @@
 All notable changes to `gh-reaper` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.0] - 2026-06-04
+
+### Added
+- **Parallel inspection.** Worktrees are now sized/classified concurrently across
+  workers (default: CPU count), instead of one at a time. A real 238-worktree /
+  114 GB scan dropped from ~121s to ~31s (~4× on 16 cores), with identical results.
+- `-j, --jobs N` to control worker count (`--jobs 1` restores serial behavior).
+
+### Changed
+- `inspect_marker` now emits a TSV record on stdout; main() fans markers out to
+  per-PID temp files (no output interleaving, no reliance on pipe atomicity).
+
 ## [1.1.0] - 2026-06-04
 
 ### Added
