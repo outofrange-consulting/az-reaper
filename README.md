@@ -2,6 +2,8 @@
 
 [![99% Vibe_Coded](https://img.shields.io/badge/99%25-Vibe_Coded-ff69b4?style=for-the-badge&logo=claude&logoColor=white)](https://github.com/ai-ecoverse/vibe-coded-badge-action)
 
+![gh-reaper — don't fear the worktrees](hero-banner.jpg)
+
 > _"Seasons don't fear the reaper / Nor do the wind, the sun, or the rain..."_
 > — and neither do the dozen git worktrees you spun up six months ago and forgot about.
 
