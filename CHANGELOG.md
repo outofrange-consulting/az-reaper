@@ -3,6 +3,19 @@
 All notable changes to `gh-reaper` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.0] - 2026-06-04
+
+### Added
+- Scan intent's worktree pool by default: `~/intent/workspaces/<workspace>/<repo>`
+  is now a default root, alongside Conductor's `.conductor` and yolo's `.yolo`.
+- Prune intent's `.workspace/` metadata directories during discovery (they hold no
+  worktrees) to keep scanning fast.
+
+### Note
+- Reaping an intent worktree removes the `<repo>` checkout but leaves intent's
+  sibling `.workspace/` metadata, which may leave the intent app with a dangling
+  workspace. Listing is read-only and safe; use `--reap` here deliberately.
+
 ## [1.0.0] - 2026-06-04
 
 ### Added

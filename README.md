@@ -19,7 +19,7 @@ Worktrees are wonderful — until you have forty of them. Tools like [Conductor]
 
 ## Features
 
-- **Machine-wide discovery** — sweeps your usual code roots (`~/Developer`, `~/conductor`, `~/Projects`, `~/go/src`, …) for linked worktrees, not just the repo you're standing in.
+- **Machine-wide discovery** — sweeps your usual code roots (`~/Developer`, `~/conductor`, `~/intent/workspaces`, `~/Projects`, `~/go/src`, …) for linked worktrees, not just the repo you're standing in. Knows where agent tools (Conductor, yolo, intent) stash their checkouts.
 - **Age & size at a glance** — every worktree shows when it was last touched and how much disk it occupies, sorted oldest-first.
 - **Safety classification** — each worktree is tagged `clean`, `dirty`, `unpushed`, or `orphan`. Risky ones are never reaped without `--force`.
 - **macOS-friendly** — scans a curated set of dev directories by default, so it's fast and **never trips macOS privacy (TCC) permission prompts** for Desktop, Documents, Downloads, Photos, and friends.
