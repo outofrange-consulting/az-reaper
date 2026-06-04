@@ -11,9 +11,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`~/Developer`, `~/conductor`, `~/Projects`, `~/go/src`, …) plus the current directory.
 - Per-worktree reporting of last-touched age and disk size, sorted oldest-first.
 - Status classification: `clean`, `dirty`, `unpushed`, `orphan`.
-- Safe interactive reaping (`[y]es / [n]o / [a]ll / [q]uit`) with `git worktree remove`,
-  plus `--yes`, `--dry-run`, and `--json` modes.
+- **Read-only by default**: bare `gh reaper` only lists and changes nothing.
+- `--reap` performs deletion via `git worktree remove` — interactive
+  (`[y]es / [n]o / [a]ll / [q]uit`), or `--yes` to skip prompts. `--yes`/`--force`
+  do nothing without `--reap`.
 - `--force` gate for dirty/unpushed/orphan worktrees; `--prune` to tidy admin entries.
+- `--json` for machine-readable inventory; `--dry-run` as the explicit form of the
+  default read-only behavior.
 - `--min-age`, `--min-size`, `--path`, and `--all` filters.
 - macOS TCC-safe scanning: protected directories (Desktop, Documents, Downloads,
   Pictures, Library, Volumes, …) are never traversed.

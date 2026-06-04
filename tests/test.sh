@@ -93,28 +93,36 @@ else
         ok "discovers 2 worktrees (JSON) [jq missing, skipped count]"
     fi
 
-    check
-    "$REAPER" --dry-run --no-color --path "$SBX" >/dev/null 2>&1
+    check  # default is read-only
+    "$REAPER" --no-color --path "$SBX" >/dev/null 2>&1
     if [ -d "$SBX/wt-clean" ] && [ -d "$SBX/wt-dirty" ]; then
-        ok "--dry-run deletes nothing"
+        ok "default is read-only (no deletion)"
     else
-        no "--dry-run deletes nothing" "a worktree disappeared"
+        no "default is read-only (no deletion)" "a worktree disappeared without --reap"
     fi
 
-    check
+    check  # --yes without --reap must not delete
     "$REAPER" --yes --no-color --path "$SBX" >/dev/null 2>&1
-    if [ ! -d "$SBX/wt-clean" ] && [ -d "$SBX/wt-dirty" ]; then
-        ok "--yes reaps clean, skips dirty"
+    if [ -d "$SBX/wt-clean" ] && [ -d "$SBX/wt-dirty" ]; then
+        ok "--yes without --reap deletes nothing"
     else
-        no "--yes reaps clean, skips dirty" "clean present? $([ -d "$SBX/wt-clean" ] && echo yes || echo no); dirty present? $([ -d "$SBX/wt-dirty" ] && echo yes || echo no)"
+        no "--yes without --reap deletes nothing" "a worktree disappeared without --reap"
     fi
 
-    check
-    "$REAPER" --yes --force --no-color --path "$SBX" >/dev/null 2>&1
-    if [ ! -d "$SBX/wt-dirty" ]; then
-        ok "--force reaps dirty"
+    check  # --reap --yes reaps clean, skips dirty
+    "$REAPER" --reap --yes --no-color --path "$SBX" >/dev/null 2>&1
+    if [ ! -d "$SBX/wt-clean" ] && [ -d "$SBX/wt-dirty" ]; then
+        ok "--reap --yes reaps clean, skips dirty"
     else
-        no "--force reaps dirty" "dirty worktree still present"
+        no "--reap --yes reaps clean, skips dirty" "clean present? $([ -d "$SBX/wt-clean" ] && echo yes || echo no); dirty present? $([ -d "$SBX/wt-dirty" ] && echo yes || echo no)"
+    fi
+
+    check  # --reap --force reaps dirty
+    "$REAPER" --reap --yes --force --no-color --path "$SBX" >/dev/null 2>&1
+    if [ ! -d "$SBX/wt-dirty" ]; then
+        ok "--reap --force reaps dirty"
+    else
+        no "--reap --force reaps dirty" "dirty worktree still present"
     fi
 fi
 

@@ -61,22 +61,24 @@ USAGE:
   gh reaper [OPTIONS] [PATH...]
 
 DESCRIPTION:
-  Scans your developer directories for linked git worktrees, shows when each
-  was last touched and how much disk it occupies (oldest first), then offers
-  to reap the ones you've forgotten. By default it only walks well-known code
-  roots so it stays fast and never trips macOS privacy (TCC) prompts for
-  Desktop, Documents, Downloads, Photos, and friends.
+  Scans your developer directories for linked git worktrees and shows when each
+  was last touched and how much disk it occupies (oldest first). By default it
+  is READ-ONLY -- it lists and changes nothing. Add --reap to actually delete.
+  It only walks well-known code roots so it stays fast and never trips macOS
+  privacy (TCC) prompts for Desktop, Documents, Downloads, Photos, and friends.
 
 OPTIONS:
+  -r, --reap           Delete worktrees (interactive unless --yes). Without this,
+                       gh reaper only lists -- it never removes anything.
   -d, --min-age DAYS   Only show worktrees untouched for at least DAYS (default: 0)
   -s, --min-size MB    Only show worktrees at least MB megabytes in size (default: 0)
   -p, --path DIR       Add a scan root (repeatable; also accepted as PATH args)
   -a, --all            Scan all of \$HOME (still skips TCC-protected dirs)
-      --dry-run        List only; never remove anything
-  -y, --yes            Reap every matching worktree without prompting
-  -f, --force          Allow reaping dirty, unpushed, or orphaned worktrees
-      --prune          Run 'git worktree prune' on touched repos afterward
-      --json           Emit results as JSON (implies --dry-run)
+  -y, --yes            With --reap, delete without prompting for each worktree
+  -f, --force          With --reap, also remove dirty, unpushed, or orphaned worktrees
+      --prune          With --reap, run 'git worktree prune' on touched repos afterward
+      --json           Emit results as JSON (always read-only)
+      --dry-run        List only, change nothing (this is the default; kept for habit)
       --no-color       Disable colored output
   -v, --version        Show version
   -h, --help           Show this help
@@ -88,20 +90,20 @@ STATUS FLAGS:
   ${C_RED}orphan${C_RESET}     Main repository is gone; only the checkout remains
 
 EXAMPLES:
-  # Survey forgotten worktrees in your usual code dirs
+  # Survey forgotten worktrees -- read-only, the default
   gh reaper
 
   # Anything untouched for 30+ days and bigger than 100 MB
   gh reaper --min-age 30 --min-size 100
 
-  # Scan a specific spot and reap interactively
-  gh reaper ~/work/monorepo
+  # Scan a specific spot, then reap interactively
+  gh reaper ~/work/monorepo --reap
 
-  # Reap everything 2+ weeks old, no questions asked
-  gh reaper --min-age 14 --yes
+  # Reap everything 2+ weeks old, no prompts
+  gh reaper --min-age 14 --reap --yes
 
-  # Machine-wide sweep, just look (no deletion)
-  gh reaper --all --dry-run
+  # Machine-wide survey (still skips TCC-protected dirs)
+  gh reaper --all
 
 More cowbell: https://github.com/ai-ecoverse/gh-reaper
 EOF
@@ -113,6 +115,7 @@ EOF
 opt_min_age_days=0
 opt_min_size_mb=0
 opt_all=0
+opt_reap=0
 opt_dry_run=0
 opt_yes=0
 opt_force=0
@@ -124,6 +127,7 @@ extra_roots=()
 parse_args() {
     while [ $# -gt 0 ]; do
         case "$1" in
+            -r|--reap) opt_reap=1; shift ;;
             -d|--min-age) opt_min_age_days="${2:?--min-age needs a value}"; shift 2 ;;
             -s|--min-size) opt_min_size_mb="${2:?--min-size needs a value}"; shift 2 ;;
             -p|--path) extra_roots+=("${2:?--path needs a value}"); shift 2 ;;
@@ -132,7 +136,7 @@ parse_args() {
             -y|--yes) opt_yes=1; shift ;;
             -f|--force) opt_force=1; shift ;;
             --prune) opt_prune=1; shift ;;
-            --json) opt_json=1; opt_dry_run=1; shift ;;
+            --json) opt_json=1; shift ;;
             --no-color) opt_color=0; shift ;;
             -v|--version) opt_color=0; setup_colors; show_version; exit 0 ;;
             -h|--help) setup_colors; show_help; exit 0 ;;
@@ -144,6 +148,9 @@ parse_args() {
 
     case "$opt_min_age_days" in *[!0-9]*) echo "Error: --min-age must be a whole number" >&2; exit 1 ;; esac
     case "$opt_min_size_mb"  in *[!0-9]*) echo "Error: --min-size must be a whole number" >&2; exit 1 ;; esac
+
+    # Read-only modes win over --reap, so habit and scripts can't delete by surprise.
+    if [ "$opt_dry_run" = 1 ] || [ "$opt_json" = 1 ]; then opt_reap=0; fi
 }
 
 # ---------------------------------------------------------------------------
@@ -433,7 +440,16 @@ main() {
     printf '%s%d worktree(s), %s total%s\n\n' \
         "$C_DIM" "${#sorted[@]}" "$(human_size_kb "$total_kb")" "$C_RESET"
 
-    if [ "$opt_dry_run" = 1 ]; then exit 0; fi
+    # Read-only unless explicitly asked to reap.
+    if [ "$opt_reap" != 1 ]; then
+        if [ "$opt_yes" = 1 ] || [ "$opt_force" = 1 ] || [ "$opt_prune" = 1 ]; then
+            printf '%snote: --yes/--force/--prune do nothing without --reap; nothing was deleted.%s\n' \
+                "$C_DIM" "$C_RESET" >&2
+        fi
+        printf '%sRead-only listing -- nothing deleted. Add %s--reap%s%s to delete (interactive), or %s--reap --yes%s%s to skip prompts.%s\n' \
+            "$C_DIM" "$C_BOLD$C_CYAN" "$C_RESET" "$C_DIM" "$C_BOLD$C_CYAN" "$C_RESET" "$C_DIM" "$C_RESET"
+        exit 0
+    fi
 
     # ---- reap ----
     local reap_all="$opt_yes" reaped=0 freed_kb=0 ans out
