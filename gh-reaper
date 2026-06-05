@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # gh-reaper - GitHub CLI extension that harvests stale git worktrees
-# Version: 1.5.0
+# Version: 1.5.1
 # https://github.com/ai-ecoverse/gh-reaper
 #
 # Seasons don't fear the reaper. Nor do your forgotten worktrees -- until now.
@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-VERSION="1.5.0"
+VERSION="1.5.1"
 EXTENSION_NAME="gh-reaper"
 
 # Absolute path to this script, so we can re-invoke ourselves as parallel
@@ -487,7 +487,13 @@ reap_one() {
         return $?
     fi
     local args=(worktree remove)
-    case "$status" in *dirty*|*unpushed*) args+=(--force) ;; esac
+    # Risky statuses force by classification. A worktree we already judged
+    # reapable (clean/merged) can still carry ignored lock-file churn that plain
+    # `git worktree remove` refuses ("contains modified or untracked files") --
+    # force past that too, since the decision to reap is already made.
+    if is_risky "$status" || [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then
+        args+=(--force)
+    fi
     args+=("$wt")
     git -C "$main" "${args[@]}" 2>&1
 }

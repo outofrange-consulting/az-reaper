@@ -3,6 +3,15 @@
 All notable changes to `gh-reaper` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.1] - 2026-06-05
+
+### Fixed
+- Reaping a `merged`/`clean` worktree that still carried regenerable lock-file
+  churn failed: `git worktree remove` refused it with "contains modified or
+  untracked files." `reap_one` now forces past that mechanical check for
+  worktrees already judged reapable, so the 1.5.0 lock-file feature can actually
+  delete them. Added a test that reaps a lock-only merged worktree end-to-end.
+
 ## [1.5.0] - 2026-06-05
 
 ### Added

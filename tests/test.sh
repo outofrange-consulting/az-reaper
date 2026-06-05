@@ -253,6 +253,16 @@ if command -v git >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
     [ "$s" = "dirty merged" ] && ok "lock churn + real edit stays dirty" \
         || no "lock churn + real edit stays dirty" "got: $s"
 
+    check  # a lock-only merged worktree actually reaps (git would otherwise
+           # refuse the modified lock file); the lock+real one is skipped
+    "$REAPER" --reap --yes --merged --no-color --path "$LSBX" >/dev/null 2>&1
+    if [ ! -d "$LSBX/wt-lock" ] && [ -d "$LSBX/wt-lock-real" ]; then
+        ok "lock-only merged worktree reaps; lock+real skipped"
+    else
+        no "lock-only merged worktree reaps; lock+real skipped" \
+           "wt-lock=$([ -d "$LSBX/wt-lock" ]&&echo y||echo n) wt-lock-real=$([ -d "$LSBX/wt-lock-real" ]&&echo y||echo n)"
+    fi
+
     rm -rf "$(dirname "$LSBX")"
 fi
 
