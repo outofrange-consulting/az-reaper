@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # gh-reaper - GitHub CLI extension that harvests stale git worktrees
-# Version: 1.3.0
+# Version: 1.4.0
 # https://github.com/ai-ecoverse/gh-reaper
 #
 # Seasons don't fear the reaper. Nor do your forgotten worktrees -- until now.
@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-VERSION="1.3.0"
+VERSION="1.4.0"
 EXTENSION_NAME="gh-reaper"
 
 # Absolute path to this script, so we can re-invoke ourselves as parallel
@@ -83,11 +83,21 @@ DESCRIPTION:
   It only walks well-known code roots so it stays fast and never trips macOS
   privacy (TCC) prompts for Desktop, Documents, Downloads, Photos, and friends.
 
+  AGE reflects the newest *non-gitignored* change (tracked/unignored file mtime
+  or last commit) -- so a routine 'npm install' or build no longer resets a
+  worktree's apparent age. Each worktree is also checked for whether its work is
+  already MERGED into the repo's default branch -- a far stronger "done" signal
+  than age alone.
+
 OPTIONS:
   -r, --reap           Delete worktrees (interactive unless --yes). Without this,
                        gh reaper only lists -- it never removes anything.
   -d, --min-age DAYS   Only show worktrees untouched for at least DAYS (default: 0)
   -s, --min-size MB    Only show worktrees at least MB megabytes in size (default: 0)
+  -m, --merged         Only show worktrees whose HEAD is merged into the default
+                       branch (with --reap, sweep exactly the done ones)
+      --check-prs      For non-merged branches, ask 'gh' whether their PR was
+                       merged (catches squash-merges; needs gh auth + network)
   -p, --path DIR       Add a scan root (repeatable; also accepted as PATH args)
   -j, --jobs N         Parallel inspection workers (default: CPU count; 1 = serial)
   -a, --all            Scan all of \$HOME (still skips TCC-protected dirs)
@@ -101,6 +111,8 @@ OPTIONS:
   -h, --help           Show this help
 
 STATUS FLAGS:
+  ${C_GREEN}merged${C_RESET}     HEAD is already in the default branch -- done, safe to reap
+  ${C_GREEN}pr-merged${C_RESET}  Branch's pull request was merged (squash-merge; --check-prs)
   ${C_GREEN}clean${C_RESET}      No local changes; HEAD exists on a remote -- safe to reap
   ${C_YELLOW}dirty${C_RESET}      Uncommitted or untracked changes present
   ${C_YELLOW}unpushed${C_RESET}   Commits that exist nowhere on a remote
@@ -118,6 +130,9 @@ EXAMPLES:
 
   # Reap everything 2+ weeks old, no prompts
   gh reaper --min-age 14 --reap --yes
+
+  # Sweep only worktrees whose work is already merged (incl. squashed PRs)
+  gh reaper --merged --check-prs --reap
 
   # Machine-wide survey (still skips TCC-protected dirs)
   gh reaper --all
@@ -140,6 +155,8 @@ opt_force=0
 opt_prune=0
 opt_json=0
 opt_color=1
+opt_merged_only=0
+opt_check_prs=0
 extra_roots=()
 
 parse_args() {
@@ -155,6 +172,8 @@ parse_args() {
             -y|--yes) opt_yes=1; shift ;;
             -f|--force) opt_force=1; shift ;;
             --prune) opt_prune=1; shift ;;
+            -m|--merged) opt_merged_only=1; shift ;;
+            --check-prs|--prs) opt_check_prs=1; shift ;;
             --json) opt_json=1; shift ;;
             --no-color) opt_color=0; shift ;;
             -v|--version) opt_color=0; setup_colors; show_version; exit 0 ;;
@@ -186,6 +205,21 @@ file_mtime() {
     else
         stat -f %m "$f" 2>/dev/null || echo 0
     fi
+}
+
+# Newest mtime (epoch seconds) among a worktree's tracked + untracked-but-not-
+# -ignored files. This deliberately excludes gitignored paths (node_modules,
+# dist, build output, caches) so that a routine install/build/checkout does not
+# reset a worktree's apparent age. Prints 0 when there are no such files.
+newest_unignored_mtime() {
+    local wt="$1" newest
+    newest="$( { git -C "$wt" ls-files -z 2>/dev/null
+                 git -C "$wt" ls-files -z --others --exclude-standard 2>/dev/null; } \
+        | ( cd "$wt" 2>/dev/null || exit 0
+            if [ "$STAT_GNU" = 1 ]; then xargs -0 stat -c %Y 2>/dev/null
+            else                          xargs -0 stat -f %m 2>/dev/null; fi ) \
+        | sort -rn | head -1 )"
+    case "$newest" in ''|*[!0-9]*) echo 0 ;; *) echo "$newest" ;; esac
 }
 
 # ---------------------------------------------------------------------------
@@ -300,40 +334,72 @@ inspect_marker() {
     # Resolve a relative gitdir against the worktree.
     case "$gitdir" in /*) ;; *) gitdir="$wt/$gitdir" ;; esac
 
-    # "Last touched" from signals git's *read* commands never rewrite:
-    # the working-dir mtime, the reflog (logs/HEAD), and the last commit date.
-    # (The index is deliberately ignored -- `git status` rewrites it, which
-    # would reset a worktree's apparent age every time we inspect it.)
+    # "Last touched" = the newest *non-gitignored* change (tracked/unignored file
+    # mtime, or the last commit date). Build output, node_modules, caches and the
+    # like are excluded, so a routine install/build/checkout no longer resets a
+    # worktree's apparent age. Orphans (no usable git) fall back to the working-
+    # dir / reflog mtime, since git can't enumerate the tree there.
     local kb touched dir_m logs_m branch status main
+    local dirty=0 unpushed=0 merged=0 prmerged=0
     # No pipe into an early-exit filter here: on a big tree `du` is still
     # writing when the reader quits, and SIGPIPE + pipefail would kill us.
     kb="$(du -sk "$wt" 2>/dev/null)" || kb=""
     kb="${kb%%[[:space:]]*}"; : "${kb:=0}"
     dir_m="$(file_mtime "$wt")"
     logs_m="$(file_mtime "$gitdir/logs/HEAD")"
-    touched="$dir_m"
-    [ "$logs_m" -gt "$touched" ] && touched="$logs_m"
 
     if git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        local commit_ct ahead up
+        local commit_ct newest_m ahead up def
         commit_ct="$(git -C "$wt" log -1 --format=%ct 2>/dev/null || echo 0)"
-        [ "${commit_ct:-0}" -gt "$touched" ] && touched="$commit_ct"
+        case "$commit_ct" in ''|*[!0-9]*) commit_ct=0 ;; esac
+        newest_m="$(newest_unignored_mtime "$wt")"
+        touched="$commit_ct"
+        [ "$newest_m" -gt "$touched" ] && touched="$newest_m"
+        # Degenerate worktree (no commits, no files): fall back to dir mtime.
+        [ "${touched:-0}" -le 0 ] && touched="$dir_m"
 
         branch="$(git -C "$wt" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
         [ -z "$branch" ] && branch="detached@$(git -C "$wt" rev-parse --short HEAD 2>/dev/null || echo '?')"
 
-        status="clean"
-        if [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then
-            status="dirty"
-        fi
+        [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ] && dirty=1
+
         # Unpushed = commits that live nowhere on a remote.
         if up="$(git -C "$wt" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)"; then
             ahead="$(git -C "$wt" rev-list --count "${up}..HEAD" 2>/dev/null || echo 0)"
-            if [ "${ahead:-0}" -gt 0 ]; then
-                [ "$status" = clean ] && status="unpushed" || status="$status unpushed"
-            fi
+            [ "${ahead:-0}" -gt 0 ] && unpushed=1
         elif [ -z "$(git -C "$wt" branch -r --contains HEAD 2>/dev/null)" ]; then
-            [ "$status" = clean ] && status="unpushed" || status="$status unpushed"
+            unpushed=1
+        fi
+
+        # Merged = HEAD is already contained in the repo's default branch. A
+        # strong, age-independent "this work is done" signal, fully offline.
+        def="$(git -C "$wt" symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null)"
+        if [ -z "$def" ]; then
+            local c
+            for c in origin/main origin/master main master; do
+                git -C "$wt" rev-parse -q --verify "$c" >/dev/null 2>&1 && { def="$c"; break; }
+            done
+        fi
+        if [ -n "$def" ] && git -C "$wt" merge-base --is-ancestor HEAD "$def" 2>/dev/null; then
+            merged=1
+        fi
+
+        # Optional, network: a squash/rebase-merged branch is not an ancestor of
+        # the default branch, yet its PR is merged. Only consult gh for branches
+        # we could not confirm offline, and only when asked (--check-prs).
+        if [ "$merged" = 0 ] && [ "${REAPER_CHECK_PRS:-0}" = 1 ] \
+           && command -v gh >/dev/null 2>&1; then
+            case "$branch" in
+                detached@*|'') ;;  # no branch -> no PR to look up
+                *)
+                    local pr_n
+                    pr_n="$( cd "$wt" 2>/dev/null \
+                        && gh pr list --head "$branch" --state merged \
+                             --limit 1 --json number -q 'length' 2>/dev/null )"
+                    case "$pr_n" in ''|*[!0-9]*) pr_n=0 ;; esac
+                    [ "$pr_n" -gt 0 ] && prmerged=1
+                    ;;
+            esac
         fi
 
         # First porcelain line is "worktree <main-path>"; parse without a pipe.
@@ -342,6 +408,8 @@ inspect_marker() {
         [ -z "$main" ] && main="$wt"
     else
         # Git can't operate -> the main repo is gone.
+        touched="$dir_m"
+        [ "$logs_m" -gt "$touched" ] && touched="$logs_m"
         status="orphan"
         branch="?"
         if [ -r "$gitdir/HEAD" ]; then
@@ -349,6 +417,18 @@ inspect_marker() {
             branch="${line#ref: refs/heads/}"
         fi
         main=""
+    fi
+
+    # Assemble the status label. "merged"/"pr-merged" supersede "unpushed" --
+    # those commits are accounted for in the default branch (or a merged PR).
+    if [ "${status:-}" != "orphan" ]; then
+        if [ "$merged" = 1 ] || [ "$prmerged" = 1 ]; then unpushed=0; fi
+        status=""
+        [ "$dirty" = 1 ] && status="dirty"
+        [ "$unpushed" = 1 ] && status="${status:+$status }unpushed"
+        if [ "$prmerged" = 1 ]; then status="${status:+$status }pr-merged"
+        elif [ "$merged" = 1 ]; then status="${status:+$status }merged"; fi
+        [ -z "$status" ] && status="clean"
     fi
 
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$touched" "$kb" "$branch" "$status" "$wt" "$main"
@@ -420,7 +500,8 @@ main() {
         local outdir rec_line
         outdir="$(mktemp -d)"
         printf '%s\0' "${markers[@]}" \
-            | REAPER_OUT_DIR="$outdir" xargs -0 -P "$jobs" -n 16 "$SELF_PATH" --__inspect 2>/dev/null || true
+            | REAPER_OUT_DIR="$outdir" REAPER_CHECK_PRS="$opt_check_prs" \
+              xargs -0 -P "$jobs" -n 16 "$SELF_PATH" --__inspect 2>/dev/null || true
         while IFS= read -r rec_line; do
             [ -n "$rec_line" ] && RECORDS+=("$rec_line")
         done < <(cat "$outdir"/*.tsv 2>/dev/null)
@@ -436,6 +517,9 @@ main() {
         age=$(( NOW - touched ))
         [ "$age" -lt "$min_age_secs" ] && continue
         [ "$kb" -lt "$min_kb" ] && continue
+        if [ "$opt_merged_only" = 1 ]; then
+            case "$status" in *merged*) ;; *) continue ;; esac
+        fi
         filtered+=("$rec")
     done
 
@@ -456,6 +540,7 @@ main() {
             split("\n") | map(select(length>0)) | map(split("\t")) |
             map({
               path: .[4], branch: .[2], status: .[3],
+              merged: (.[3]|test("merged")),
               sizeKb: (.[1]|tonumber),
               touched: (.[0]|tonumber),
               ageDays: (($now - (.[0]|tonumber)) / 86400 | floor),
@@ -475,7 +560,7 @@ main() {
         case "$status" in
             *orphan*)            color="$C_RED" ;;
             *dirty*|*unpushed*)  color="$C_YELLOW" ;;
-            clean)               color="$C_GREEN" ;;
+            *merged*|clean)      color="$C_GREEN" ;;
         esac
         local br="$branch"; [ ${#br} -gt 22 ] && br="${br:0:21}…"
         printf '%s%-6s %8s  %-14s %-22s %s%s\n' \

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # Test suite for gh-reaper.
-# Runs structural checks plus an end-to-end worktree sandbox: discovery,
-# classification, JSON output, dry-run safety, and real reaping.
+# Runs structural checks plus end-to-end worktree sandboxes: discovery,
+# classification (clean/dirty/unpushed/merged), the gitignore-aware age
+# signal, JSON output, dry-run safety, and real reaping.
 #
 set -uo pipefail
 
@@ -50,6 +51,13 @@ for s in "USAGE:" "OPTIONS:" "STATUS FLAGS:" "EXAMPLES:"; do
 done
 [ -z "$missing" ] && ok "--help has all sections" || no "--help has all sections" "missing:$missing"
 
+check  # new flags & status documented
+missing=""
+for s in "--merged" "--check-prs" "merged"; do
+    [[ "$help" == *"$s"* ]] || missing="$missing $s"
+done
+[ -z "$missing" ] && ok "--help documents merged signals" || no "--help documents merged signals" "missing:$missing"
+
 check
 if "$REAPER" --min-age nope >/dev/null 2>&1; then
     no "rejects bad --min-age" "exit 0 on non-numeric"
@@ -58,7 +66,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Integration sandbox
+# Integration sandbox: clean / dirty / unpushed / merged
 # ---------------------------------------------------------------------------
 if ! command -v git >/dev/null 2>&1; then
     echo "SKIP integration tests (git not available)"
@@ -71,31 +79,61 @@ else
         g init repo >/dev/null
         cd repo || exit 1
         g remote add origin "$SBX/remote.git"
-        echo hi > a.txt; g add a.txt; g commit -qm init; g push -q -u origin main
-        # clean worktree (branch pushed)
-        g branch feat-clean
-        g worktree add -q ../wt-clean feat-clean
-        g push -q origin feat-clean
-        # dirty worktree
+        echo hi > a.txt; g add a.txt; g commit -qm init
+        printf 'node_modules/\ndist/\n' > .gitignore; g add .gitignore; g commit -qm ignore
+        g push -q -u origin main
+        g remote set-head origin main
+
+        # clean: pushed, unmerged branch + clean worktree
+        g worktree add -q ../wt-clean -b feat-clean
+        ( cd ../wt-clean && echo c > c.txt && g add c.txt && g commit -qm "clean work" \
+            && g push -q -u origin feat-clean )
+
+        # dirty: pushed, unmerged branch + uncommitted edit
         g worktree add -q ../wt-dirty -b feat-dirty
-        echo x > ../wt-dirty/b.txt
+        ( cd ../wt-dirty && echo d > d.txt && g add d.txt && g commit -qm "dirty work" \
+            && g push -q -u origin feat-dirty && echo more >> d.txt )
+
+        # unpushed: local commit, never pushed, not merged
+        g worktree add -q ../wt-unpushed -b feat-unpushed
+        ( cd ../wt-unpushed && echo u > u.txt && g add u.txt && g commit -qm "local only" )
+
+        # merged: branch with a real commit, merged into main
+        g worktree add -q ../wt-merged -b feat-merged
+        ( cd ../wt-merged && echo m > m.txt && g add m.txt && g commit -qm "feature m" )
+        g merge -q --no-ff feat-merged -m "merge feat-merged"
+        g push -q origin main
     ) >/dev/null 2>&1
 
-    check
-    json="$("$REAPER" --json --path "$SBX" 2>/dev/null)"
     if command -v jq >/dev/null 2>&1; then
+        json="$("$REAPER" --json --path "$SBX" 2>/dev/null)"
+
+        check
         n="$(printf '%s' "$json" | jq 'length' 2>/dev/null)"
-        [ "$n" = 2 ] && ok "discovers 2 worktrees (JSON)" || no "discovers 2 worktrees (JSON)" "got: $n"
+        [ "$n" = 4 ] && ok "discovers 4 worktrees (JSON)" || no "discovers 4 worktrees (JSON)" "got: $n"
+
         check
         statuses="$(printf '%s' "$json" | jq -r '.[].status' 2>/dev/null | sort | tr '\n' ',')"
-        [ "$statuses" = "clean,dirty," ] && ok "classifies clean + dirty" || no "classifies clean + dirty" "got: $statuses"
+        [ "$statuses" = "clean,dirty,merged,unpushed," ] \
+            && ok "classifies clean/dirty/unpushed/merged" \
+            || no "classifies clean/dirty/unpushed/merged" "got: $statuses"
+
+        check  # merged boolean tracks the merged worktree
+        mb="$(printf '%s' "$json" | jq -r 'map(select(.merged))|.[].branch' 2>/dev/null)"
+        [ "$mb" = "feat-merged" ] && ok "merged boolean flags only the merged worktree" \
+            || no "merged boolean flags only the merged worktree" "got: $mb"
+
+        check  # --merged filter narrows to the merged one
+        only="$("$REAPER" --json --merged --path "$SBX" 2>/dev/null | jq -r '.[].branch' 2>/dev/null)"
+        [ "$only" = "feat-merged" ] && ok "--merged filter narrows to merged" \
+            || no "--merged filter narrows to merged" "got: $only"
     else
-        ok "discovers 2 worktrees (JSON) [jq missing, skipped count]"
+        check; ok "JSON classification [jq missing, skipped]"
     fi
 
     check  # default is read-only
     "$REAPER" --no-color --path "$SBX" >/dev/null 2>&1
-    if [ -d "$SBX/wt-clean" ] && [ -d "$SBX/wt-dirty" ]; then
+    if [ -d "$SBX/wt-clean" ] && [ -d "$SBX/wt-merged" ]; then
         ok "default is read-only (no deletion)"
     else
         no "default is read-only (no deletion)" "a worktree disappeared without --reap"
@@ -103,27 +141,66 @@ else
 
     check  # --yes without --reap must not delete
     "$REAPER" --yes --no-color --path "$SBX" >/dev/null 2>&1
-    if [ -d "$SBX/wt-clean" ] && [ -d "$SBX/wt-dirty" ]; then
+    if [ -d "$SBX/wt-clean" ] && [ -d "$SBX/wt-merged" ]; then
         ok "--yes without --reap deletes nothing"
     else
         no "--yes without --reap deletes nothing" "a worktree disappeared without --reap"
     fi
 
-    check  # --reap --yes reaps clean, skips dirty
+    check  # --reap --yes reaps clean + merged, skips dirty + unpushed
     "$REAPER" --reap --yes --no-color --path "$SBX" >/dev/null 2>&1
-    if [ ! -d "$SBX/wt-clean" ] && [ -d "$SBX/wt-dirty" ]; then
-        ok "--reap --yes reaps clean, skips dirty"
+    if [ ! -d "$SBX/wt-clean" ] && [ ! -d "$SBX/wt-merged" ] \
+       && [ -d "$SBX/wt-dirty" ] && [ -d "$SBX/wt-unpushed" ]; then
+        ok "--reap --yes reaps clean+merged, skips dirty+unpushed"
     else
-        no "--reap --yes reaps clean, skips dirty" "clean present? $([ -d "$SBX/wt-clean" ] && echo yes || echo no); dirty present? $([ -d "$SBX/wt-dirty" ] && echo yes || echo no)"
+        no "--reap --yes reaps clean+merged, skips dirty+unpushed" \
+           "clean=$([ -d "$SBX/wt-clean" ]&&echo y||echo n) merged=$([ -d "$SBX/wt-merged" ]&&echo y||echo n) dirty=$([ -d "$SBX/wt-dirty" ]&&echo y||echo n) unpushed=$([ -d "$SBX/wt-unpushed" ]&&echo y||echo n)"
     fi
 
-    check  # --reap --force reaps dirty
+    check  # --reap --force reaps the risky remainder
     "$REAPER" --reap --yes --force --no-color --path "$SBX" >/dev/null 2>&1
-    if [ ! -d "$SBX/wt-dirty" ]; then
-        ok "--reap --force reaps dirty"
+    if [ ! -d "$SBX/wt-dirty" ] && [ ! -d "$SBX/wt-unpushed" ]; then
+        ok "--reap --force reaps dirty+unpushed"
     else
-        no "--reap --force reaps dirty" "dirty worktree still present"
+        no "--reap --force reaps dirty+unpushed" \
+           "dirty=$([ -d "$SBX/wt-dirty" ]&&echo y||echo n) unpushed=$([ -d "$SBX/wt-unpushed" ]&&echo y||echo n)"
     fi
+fi
+
+# ---------------------------------------------------------------------------
+# Age signal: gitignored churn must NOT reset a worktree's apparent age.
+# A worktree with an old commit + old tracked files but a freshly-written
+# node_modules/ file should still report a large age.
+# ---------------------------------------------------------------------------
+if command -v git >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    ASBX="$(mktemp -d)/age"; mkdir -p "$ASBX"
+    OLD="2020-01-01T00:00:00"
+    (
+        cd "$ASBX" || exit 1
+        g init --bare remote.git >/dev/null
+        g init repo >/dev/null
+        cd repo || exit 1
+        g remote add origin "$ASBX/remote.git"
+        export GIT_AUTHOR_DATE="$OLD" GIT_COMMITTER_DATE="$OLD"
+        echo hi > a.txt; g add a.txt; g commit -qm init
+        printf 'node_modules/\n' > .gitignore; g add .gitignore; g commit -qm ignore
+        g push -q -u origin main
+        g remote set-head origin main
+        g worktree add -q ../wt-old -b feat-old
+        # Backdate the tracked files (checkout stamps them "now").
+        for f in $(g -C ../wt-old ls-files); do touch -t 202001010000 "../wt-old/$f"; done
+        # Fresh gitignored build churn -- must be ignored by the age signal.
+        mkdir -p ../wt-old/node_modules; echo junk > ../wt-old/node_modules/x
+    ) >/dev/null 2>&1
+
+    check
+    age="$("$REAPER" --json --path "$ASBX" 2>/dev/null | jq -r '.[0].ageDays' 2>/dev/null)"
+    if [ -n "$age" ] && [ "$age" != null ] && [ "$age" -gt 365 ] 2>/dev/null; then
+        ok "age ignores gitignored churn (ageDays=$age > 365)"
+    else
+        no "age ignores gitignored churn" "ageDays=$age (expected > 365)"
+    fi
+    rm -rf "$(dirname "$ASBX")"
 fi
 
 # ---------------------------------------------------------------------------

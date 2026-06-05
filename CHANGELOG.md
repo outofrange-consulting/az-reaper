@@ -3,6 +3,28 @@
 All notable changes to `gh-reaper` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.4.0] - 2026-06-05
+
+### Added
+- **`merged` status.** Each worktree is now checked for whether its `HEAD` is
+  already contained in the repo's default branch (`git merge-base --is-ancestor`),
+  an age-independent "this work is done" signal. Merged worktrees are reapable
+  without `--force` (when otherwise clean).
+- **`-m, --merged` filter.** Show (and with `--reap`, sweep) only worktrees whose
+  work is already merged — e.g. `gh reaper --merged --reap`.
+- **`--check-prs` (opt-in, networked).** For branches that aren't ancestors of the
+  default branch, ask `gh` whether their pull request was merged, tagging them
+  `pr-merged`. Catches GitHub squash/rebase-merges that rewrite commit history.
+- `merged` boolean field in `--json` output.
+
+### Changed
+- **`AGE` now tracks the newest _non-gitignored_ change** (tracked/unignored file
+  mtime, or last commit), instead of `max(dir-mtime, reflog, commit)`. A routine
+  `npm install`, build, or automated `git checkout` no longer resets a worktree's
+  apparent age — fixing worktrees that looked "0 days old" while their actual work
+  was months stale. `--min-age` filters on this corrected value. Orphans (no usable
+  git) still fall back to the working-dir / reflog mtime.
+
 ## [1.3.0] - 2026-06-04
 
 ### Added
