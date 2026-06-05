@@ -3,6 +3,19 @@
 All notable changes to `gh-reaper` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.0] - 2026-06-05
+
+### Added
+- **Lock files are treated like `.gitignore`d files.** A worktree whose only
+  uncommitted change is a regenerable dependency lock file (`package-lock.json`,
+  `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `go.sum`, `Gemfile.lock`,
+  `poetry.lock`, `composer.lock`, `flake.lock`, …) is no longer flagged `dirty`,
+  and lock-file mtimes no longer count toward its age. A stray `npm install` can't
+  pin an otherwise-done worktree as un-reapable. Lock changes alongside any real
+  edit still count as dirty.
+- **`--no-ignore-locks`** to opt out and treat lock-file changes as dirty (the
+  pre-1.5 behavior).
+
 ## [1.4.0] - 2026-06-05
 
 ### Added

@@ -27,7 +27,7 @@ Worktrees are wonderful — until you have forty of them. Tools like [Conductor]
 - **Machine-wide discovery** — sweeps your usual code roots (`~/Developer`, `~/conductor`, `~/intent/workspaces`, `~/.codex/worktrees`, `~/Projects`, `~/go/src`, …) for linked worktrees, not just the repo you're standing in. Knows where agent tools (Conductor, yolo, intent, Codex) stash their checkouts — and finds Claude Code's `<repo>/.claude/worktrees/` automatically since they nest inside scanned repos.
 - **Age & size at a glance** — every worktree shows when it was last touched and how much disk it occupies, sorted oldest-first. "Touched" means the newest **non-gitignored** change, so a routine `npm install` or build doesn't make a months-old worktree look brand new.
 - **Knows what's already done** — flags worktrees whose `HEAD` is already merged into the default branch (`merged`), and optionally asks `gh` whether a branch's PR was squash-merged (`pr-merged`, via `--check-prs`). Sweep just the finished ones with `gh reaper --merged --reap`.
-- **Safety classification** — each worktree is tagged `merged`, `clean`, `dirty`, `unpushed`, or `orphan`. Risky ones are never reaped without `--force`.
+- **Safety classification** — each worktree is tagged `merged`, `clean`, `dirty`, `unpushed`, or `orphan`. Risky ones are never reaped without `--force`. Regenerable dependency lock files (`package-lock.json`, `yarn.lock`, `Cargo.lock`, …) are treated like `.gitignore`d files, so a stray `npm install` doesn't flag a finished worktree as `dirty` (opt out with `--no-ignore-locks`).
 - **macOS-friendly** — scans a curated set of dev directories by default, so it's fast and **never trips macOS privacy (TCC) permission prompts** for Desktop, Documents, Downloads, Photos, and friends.
 - **Reaps the right way** — uses `git worktree remove` (run from the main worktree) so git's bookkeeping stays consistent; `--prune` tidies the admin entries afterward.
 - **Read-only by default** — bare `gh reaper` only lists; nothing is deleted until you pass `--reap`. Then confirm each one, `[a]ll` at once, or add `--yes` to sweep unattended. `--json` for the scripty.
@@ -84,6 +84,8 @@ gh reaper [OPTIONS] [PATH...]
                        branch (with --reap, sweep exactly the done ones)
       --check-prs      For non-merged branches, ask 'gh' whether their PR was
                        merged (catches squash-merges; needs gh auth + network)
+      --no-ignore-locks  Count dependency lock-file changes as dirty (by default
+                       a worktree whose only change is lock churn is not dirty)
   -p, --path DIR       Add a scan root (repeatable; also accepted as PATH args)
   -j, --jobs N         Parallel inspection workers (default: CPU count; 1 = serial)
   -a, --all            Scan all of $HOME (still skips TCC-protected dirs)
@@ -111,6 +113,16 @@ gh reaper [OPTIONS] [PATH...]
 A worktree can combine flags — e.g. `dirty merged` means the commits are merged but
 there are still uncommitted edits, so it needs `--force`. `merged`/`pr-merged`
 supersede the `unpushed` warning, since those commits are accounted for upstream.
+
+**Lock files don't count as dirty.** Regenerable dependency lock files
+(`package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`,
+`bun.lockb`/`bun.lock`, `composer.lock`, `Gemfile.lock`, `Cargo.lock`,
+`poetry.lock`, `Pipfile.lock`, `go.sum`, `flake.lock`, `gradle.lockfile`,
+`packages.lock.json`) are treated like `.gitignore`d files: a worktree whose
+*only* change is lock-file churn isn't `dirty`, and lock mtimes don't count toward
+its age — so a `npm install` that rewrites `package-lock.json` can't keep a
+finished worktree out of the harvest. A lock change next to any real edit still
+counts as dirty. Pass `--no-ignore-locks` to disable this.
 
 ## How it works
 

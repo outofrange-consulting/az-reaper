@@ -204,6 +204,59 @@ if command -v git >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
+# Lock-file churn: a merged worktree whose only change is a regenerable lock
+# file is NOT dirty by default, but IS with --no-ignore-locks. A lock change
+# alongside a real edit stays dirty either way.
+# ---------------------------------------------------------------------------
+if command -v git >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    LSBX="$(mktemp -d)/lock"; mkdir -p "$LSBX"
+    (
+        cd "$LSBX" || exit 1
+        g init --bare remote.git >/dev/null
+        g init repo >/dev/null
+        cd repo || exit 1
+        g remote add origin "$LSBX/remote.git"
+        echo hi > a.txt; g add a.txt; g commit -qm init
+        echo '{}' > package-lock.json; g add package-lock.json; g commit -qm lock
+        g push -q -u origin main
+        g remote set-head origin main
+
+        # merged branch, then lock-only churn in the worktree
+        g worktree add -q ../wt-lock -b feat-lock
+        ( cd ../wt-lock && echo m > m.txt && g add m.txt && g commit -qm "feature" )
+        g merge -q --no-ff feat-lock -m "merge feat-lock"; g push -q origin main
+        echo '{"changed":1}' > ../wt-lock/package-lock.json
+
+        # merged branch, lock churn + a real edit
+        g worktree add -q ../wt-lock-real -b feat-lock-real
+        ( cd ../wt-lock-real && echo n > n.txt && g add n.txt && g commit -qm "feature2" )
+        g merge -q --no-ff feat-lock-real -m "merge feat-lock-real"; g push -q origin main
+        echo '{"changed":1}' > ../wt-lock-real/package-lock.json
+        echo real >> ../wt-lock-real/a.txt
+    ) >/dev/null 2>&1
+
+    statusof() { "$REAPER" --json ${2:-} --path "$LSBX" 2>/dev/null \
+        | jq -r --arg b "$1" '.[]|select(.branch==$b)|.status' 2>/dev/null; }
+
+    check  # lock-only churn -> merged (not dirty) by default
+    s="$(statusof feat-lock)"
+    [ "$s" = "merged" ] && ok "lock-only churn is not dirty (default)" \
+        || no "lock-only churn is not dirty (default)" "got: $s"
+
+    check  # --no-ignore-locks counts the lock change as dirty
+    s="$(statusof feat-lock --no-ignore-locks)"
+    [ "$s" = "dirty merged" ] && ok "--no-ignore-locks marks lock churn dirty" \
+        || no "--no-ignore-locks marks lock churn dirty" "got: $s"
+
+    check  # lock change + real edit stays dirty regardless
+    s="$(statusof feat-lock-real)"
+    [ "$s" = "dirty merged" ] && ok "lock churn + real edit stays dirty" \
+        || no "lock churn + real edit stays dirty" "got: $s"
+
+    rm -rf "$(dirname "$LSBX")"
+fi
+
+# ---------------------------------------------------------------------------
 echo
 printf "Tests run: %d   ${GREEN}passed: %d${NC}   ${RED}failed: %d${NC}\n" "$RUN" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
