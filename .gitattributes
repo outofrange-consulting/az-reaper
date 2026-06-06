@@ -1,0 +1,12 @@
+# Keep shell scripts LF-only so they run under Git Bash / WSL even when checked
+# out on Windows (a CRLF would break the '#!/usr/bin/env bash' shebang).
+az-reaper      text eol=lf
+*.sh           text eol=lf
+*.bash         text eol=lf
+
+# Normalize common text formats; leave binaries untouched.
+*.md           text
+*.yml          text
+*.yaml         text
+*.py           text eol=lf
+*.jpg          binary

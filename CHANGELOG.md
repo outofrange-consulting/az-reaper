@@ -3,6 +3,18 @@
 All notable changes to `az-reaper` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- **Windows support** (Git Bash / WSL). CPU detection falls back to
+  `NUMBER_OF_PROCESSORS`; the macOS TCC directory pruning is now scoped to macOS
+  only, so Windows clones under `Documents\GitHub` or `source\repos` are no longer
+  hidden (and `source/repos` is a default scan root); `.git` worktree pointers are
+  matched with path separators normalized and Windows drive paths (`C:/...`)
+  recognized as absolute. A `.gitattributes` keeps the script (and shell files)
+  LF-only so the shebang survives a Windows checkout. CI now also runs on
+  `windows-latest`.
+
 ## [2.0.0] - 2026-06-06
 
 ### Changed

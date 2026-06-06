@@ -60,7 +60,9 @@ git clone https://github.com/outofrange-consulting/az-reaper
 ln -s "$PWD/az-reaper/az-reaper" /usr/local/bin/az-reaper
 ```
 
-**Requirements:** `git`, plus the usual POSIX suspects (`find`, `du`, `stat`, `awk`). `jq` is only needed for `--json`. The [Azure DevOps CLI](https://learn.microsoft.com/azure/devops/cli/) (`az` + the `azure-devops` extension, signed in) is only needed for `--check-prs`. Works on macOS (BSD tools) and Linux (GNU tools).
+**Requirements:** `git`, plus the usual POSIX suspects (`find`, `du`, `stat`, `awk`). `jq` is only needed for `--json`. The [Azure DevOps CLI](https://learn.microsoft.com/azure/devops/cli/) (`az` + the `azure-devops` extension, signed in) is only needed for `--check-prs`.
+
+**Runs on macOS (BSD tools), Linux (GNU tools), and Windows** via [Git Bash](https://git-scm.com/downloads) or WSL — both ship `git`, `find`, `du`, `stat`, `awk`, and `jq`. On Windows the CPU count comes from `NUMBER_OF_PROCESSORS`, the macOS TCC directory pruning is correctly scoped to macOS only (so clones under `Documents\GitHub` or `source\repos` are scanned), and `.git` worktree pointers are matched with separators normalized. A `.gitattributes` keeps the script LF-only so its shebang survives a Windows checkout.
 
 To set up the Azure DevOps CLI for `--check-prs`:
 

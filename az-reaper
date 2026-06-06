@@ -25,7 +25,8 @@ detect_jobs() {
     local n
     n="$(getconf _NPROCESSORS_ONLN 2>/dev/null \
          || sysctl -n hw.ncpu 2>/dev/null \
-         || nproc 2>/dev/null || echo 4)"
+         || nproc 2>/dev/null \
+         || echo "${NUMBER_OF_PROCESSORS:-4}")"
     case "$n" in *[!0-9]*|'') n=4 ;; esac
     [ "$n" -gt 16 ] && n=16
     [ "$n" -lt 1 ] && n=1
@@ -278,13 +279,22 @@ tilde() {
 # Scan roots
 # ---------------------------------------------------------------------------
 # Directories that trigger macOS TCC permission dialogs or are pure noise.
-# Always pruned, even under --all.
-TCC_DENY=(
-    "$HOME/Library" "$HOME/Desktop" "$HOME/Documents" "$HOME/Downloads"
-    "$HOME/Pictures" "$HOME/Movies" "$HOME/Music" "$HOME/Public"
-    "$HOME/.Trash" "$HOME/Applications"
-    "/Volumes" "/System" "/private" "/Network" "/cores" "/Library"
-)
+# Always pruned on macOS, even under --all. TCC (Transparency, Consent, and
+# Control) is an Apple concept, so this list is macOS-only: on Linux and Windows
+# there is nothing to avoid, and pruning Desktop/Documents/Downloads there would
+# just hide real repos (e.g. Windows clones under Documents/GitHub or
+# source/repos). Off macOS the array stays empty.
+TCC_DENY=()
+case "$(uname -s 2>/dev/null)" in
+    Darwin)
+        TCC_DENY=(
+            "$HOME/Library" "$HOME/Desktop" "$HOME/Documents" "$HOME/Downloads"
+            "$HOME/Pictures" "$HOME/Movies" "$HOME/Music" "$HOME/Public"
+            "$HOME/.Trash" "$HOME/Applications"
+            "/Volumes" "/System" "/private" "/Network" "/cores" "/Library"
+        )
+        ;;
+esac
 
 # Dependency lock files: regenerated from a manifest, so a change to one alone
 # carries no authored content worth preserving. By default they are treated like
@@ -319,6 +329,7 @@ resolve_roots() {
             "$PWD"
             "$HOME/Developer" "$HOME/Projects" "$HOME/projects"
             "$HOME/Code" "$HOME/code" "$HOME/src" "$HOME/Source"
+            "$HOME/source/repos"
             "$HOME/dev" "$HOME/Dev" "$HOME/git" "$HOME/repos" "$HOME/Repositories"
             "$HOME/work" "$HOME/workspace" "$HOME/Workspace"
             "$HOME/conductor" "$HOME/.conductor"
@@ -342,22 +353,24 @@ resolve_roots() {
 }
 
 # Emit '.git' worktree-marker files under a root, pruning heavy / protected dirs.
+# The find expression is assembled into an array so the (possibly empty, off
+# macOS) TCC prune list expands safely under 'set -u' on every platform.
 find_git_markers() {
     local root="$1"
-    local prune=()
     local d
-    for d in "${TCC_DENY[@]}"; do prune+=( -path "$d" -o ); done
-    find "$root" \
-        \( "${prune[@]}" \
-           -type d \( -name node_modules -o -name .git -o -name .Trash \
-                      -o -name Library -o -name .cache -o -name Caches \
-                      -o -name .npm -o -name .pnpm-store -o -name .yarn \
-                      -o -name .venv -o -name venv -o -name .tox \
-                      -o -name .gradle -o -name .terraform -o -name .next \
-                      -o -name DerivedData -o -name Pods -o -name '*.noindex' \
-                      -o -name .workspace \) \
-        \) -prune -o \
-        -type f -name .git -print 2>/dev/null
+    local expr=( '(' )
+    for d in "${TCC_DENY[@]:+"${TCC_DENY[@]}"}"; do
+        expr+=( -path "$d" -o )
+    done
+    expr+=( -type d '(' -name node_modules -o -name .git -o -name .Trash \
+            -o -name Library -o -name .cache -o -name Caches \
+            -o -name .npm -o -name .pnpm-store -o -name .yarn \
+            -o -name .venv -o -name venv -o -name .tox \
+            -o -name .gradle -o -name .terraform -o -name .next \
+            -o -name DerivedData -o -name Pods -o -name '*.noindex' \
+            -o -name .workspace ')' ')' -prune -o \
+            -type f -name .git -print )
+    find "$root" "${expr[@]}" 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -370,10 +383,13 @@ inspect_marker() {
 
     IFS= read -r line < "$gitfile" 2>/dev/null || return 0
     case "$line" in gitdir:*) gitdir="${line#gitdir: }" ;; *) return 0 ;; esac
+    # Normalize separators: on Windows git may write the gitdir with backslashes.
+    gitdir="${gitdir//\\//}"
     # Only worktrees -- not submodules ('.../modules/...').
     case "$gitdir" in */worktrees/*) ;; *) return 0 ;; esac
-    # Resolve a relative gitdir against the worktree.
-    case "$gitdir" in /*) ;; *) gitdir="$wt/$gitdir" ;; esac
+    # Resolve a relative gitdir against the worktree. Absolute = leading slash or
+    # a Windows drive path (C:/...).
+    case "$gitdir" in /*|[A-Za-z]:/*) ;; *) gitdir="$wt/$gitdir" ;; esac
 
     # "Last touched" = the newest *non-gitignored* change (tracked/unignored file
     # mtime, or the last commit date). Build output, node_modules, caches and the
