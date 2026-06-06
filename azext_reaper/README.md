@@ -34,11 +34,17 @@ Remove it with:
 az extension remove --name reaper
 ```
 
-**Requirements:** `git`, plus the usual POSIX tools (`find`/`du`/`stat` behavior
-is reproduced in Python; `du` is shelled out for sizing). The `--check-prs`
-signal additionally needs the [Azure DevOps
-CLI](https://learn.microsoft.com/azure/devops/cli/) (`az` + the `azure-devops`
-extension, signed in, with an Azure DevOps remote). Works on macOS and Linux.
+**Requirements:** `git`. Sizing uses `du` when present and falls back to a pure
+Python directory walk otherwise. The `--check-prs` signal additionally needs the
+[Azure DevOps CLI](https://learn.microsoft.com/azure/devops/cli/) (`az` + the
+`azure-devops` extension, signed in, with an Azure DevOps remote).
+
+**Works on macOS, Linux, and Windows.** The engine is pure Python with no Unix-
+only assumptions: directory sizing degrades to a Python walk where `du` is
+absent (native Windows), the Azure CLI is invoked through `cmd /c` so the Windows
+`az.cmd` shim resolves, `.git` worktree pointers are matched with separators
+normalized, and the macOS TCC directory pruning is correctly scoped to macOS only
+(so Windows clones under `Documents\GitHub` or `source\repos` are scanned).
 
 ## Usage
 

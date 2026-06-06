@@ -17,7 +17,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   inspection via a thread pool.
 - Azure-cli-free unit tests for the engine (`azext_reaper/tests/test_reaper_core.py`)
   and a CI workflow that byte-compiles, lints (flake8), runs the engine tests, and
-  builds the wheel on Linux and macOS.
+  builds the wheel on Linux, macOS, and Windows.
+- **Windows support for the extension engine.** Directory sizing falls back to a
+  pure-Python walk where `du` is absent; the Azure CLI is invoked via `cmd /c`
+  so the `az.cmd` shim resolves; `.git` worktree pointers are matched with path
+  separators normalized; and macOS TCC pruning is scoped to macOS only, so
+  Windows clones under `Documents\GitHub` or `source\repos` are scanned.
 
 ## [2.0.0] - 2026-06-06
 

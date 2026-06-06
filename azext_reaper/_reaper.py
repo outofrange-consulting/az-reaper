@@ -15,7 +15,9 @@ script's ``--check-prs``.
 
 import fnmatch
 import os
+import shutil
 import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -45,10 +47,11 @@ PRUNE_DIR_NAMES = {
 }
 
 # Curated, fast, macOS-TCC-safe default scan roots (only those that exist).
+# Includes Windows conventions ('source/repos' is Visual Studio's default).
 _DEFAULT_ROOT_RELATIVE = [
     "Developer", "Projects", "projects", "Code", "code", "src", "Source",
-    "dev", "Dev", "git", "repos", "Repositories", "work", "workspace",
-    "Workspace", "conductor", ".conductor", "intent/workspaces",
+    "source/repos", "dev", "Dev", "git", "repos", "Repositories", "work",
+    "workspace", "Workspace", "conductor", ".conductor", "intent/workspaces",
     ".codex/worktrees", "worktrees", ".worktrees", "go/src",
 ]
 
@@ -56,8 +59,14 @@ _DEFAULT_ROOT_RELATIVE = [
 def _tcc_deny():
     """Absolute paths that trigger macOS privacy dialogs or are pure noise.
 
-    Always pruned, even under ``scan_all``.
+    macOS-only: TCC (Transparency, Consent, and Control) is an Apple concept, so
+    on Linux and Windows there is nothing to avoid -- pruning Desktop/Documents/
+    Downloads there would just hide real repos (e.g. Windows users who keep clones
+    under ``Documents\\GitHub`` or ``source\\repos``). Returns an empty set off
+    macOS. Always pruned on macOS, even under ``scan_all``.
     """
+    if sys.platform != "darwin":
+        return set()
     home = os.path.expanduser("~")
     paths = [
         os.path.join(home, d) for d in (
@@ -121,16 +130,35 @@ def file_mtime(path):
         return 0
 
 
+# ``du`` exists on macOS/Linux and inside Git Bash/WSL, but not on native
+# Windows. Resolve it once; fall back to a pure-Python walk when it's absent.
+_DU = shutil.which("du")
+
+
+def _py_dir_size_kb(path):
+    """Recursive apparent size in KiB (Windows / no-``du`` fallback)."""
+    total = 0
+    for dirpath, _dirnames, filenames in os.walk(path, followlinks=False):
+        for name in filenames:
+            try:
+                total += os.lstat(os.path.join(dirpath, name)).st_size
+            except OSError:
+                continue
+    return (total + 1023) // 1024
+
+
 def du_size_kb(path):
-    """Disk usage in KiB via ``du -sk`` (matches the script); 0 on failure."""
-    out = _run_bytes(["du", "-sk", path])
-    if not out:
-        return 0
-    head = out.split(None, 1)[0] if out.split() else b"0"
-    try:
-        return int(head)
-    except ValueError:
-        return 0
+    """Disk usage in KiB. Uses ``du -sk`` when available (matches the script),
+    otherwise a portable Python walk. Returns 0 on failure."""
+    if _DU:
+        out = _run_bytes([_DU, "-sk", path])
+        if out:
+            head = out.split(None, 1)[0] if out.split() else b"0"
+            try:
+                return int(head)
+            except ValueError:
+                pass
+    return _py_dir_size_kb(path)
 
 
 def newest_unignored_mtime(wt, ignore_locks):
@@ -223,6 +251,21 @@ def resolve_roots(paths=None, scan_all=False):
 # Azure DevOps PR check (the only Azure DevOps touchpoint)
 # ---------------------------------------------------------------------------
 
+def _az_argv(args):
+    """Build an argv that runs the Azure CLI cross-platform, or ``None``.
+
+    On Windows ``az`` is a ``.cmd`` shim, which ``CreateProcess`` cannot launch
+    directly, so it is invoked through ``cmd /c``. Elsewhere the resolved
+    executable is run as-is. Returns ``None`` when ``az`` is not installed.
+    """
+    az = shutil.which("az")
+    if not az:
+        return None
+    if os.name == "nt":
+        return ["cmd", "/c", az, *args]
+    return [az, *args]
+
+
 def pr_completed(wt, branch):
     """True iff *branch* has a COMPLETED (merged) Azure DevOps pull request.
 
@@ -231,11 +274,12 @@ def pr_completed(wt, branch):
     degrading: any failure (no ``az``, no Azure DevOps remote, no network, not
     signed in) is treated as "not merged".
     """
-    out = _run_bytes(
-        ["az", "repos", "pr", "list", "--source-branch", branch,
-         "--status", "completed", "--query", "length(@)", "-o", "tsv"],
-        cwd=wt,
-    )
+    argv = _az_argv(
+        ["repos", "pr", "list", "--source-branch", branch,
+         "--status", "completed", "--query", "length(@)", "-o", "tsv"])
+    if argv is None:
+        return False
+    out = _run_bytes(argv, cwd=wt)
     if not out:
         return False
     try:
@@ -275,8 +319,9 @@ def inspect_marker(gitfile, ignore_locks=True, check_prs=False):
     if not line.startswith("gitdir:"):
         return None
     gitdir = line[len("gitdir:"):].strip()
-    # Only worktrees -- not submodules ('.../modules/...').
-    if "/worktrees/" not in gitdir:
+    # Only worktrees -- not submodules ('.../modules/...'). Normalize separators
+    # first: on Windows git may write the gitdir with backslashes.
+    if "/worktrees/" not in gitdir.replace("\\", "/"):
         return None
     if not os.path.isabs(gitdir):
         gitdir = os.path.join(wt, gitdir)
@@ -467,7 +512,6 @@ def reap_one(wt, main, status):
     """
     if status == "orphan" or not main:
         try:
-            import shutil
             shutil.rmtree(wt)
             return True, ""
         except OSError as exc:

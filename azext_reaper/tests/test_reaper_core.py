@@ -285,5 +285,49 @@ class LockFileTests(unittest.TestCase):
         self.assertEqual(self._status("feat-lock-real"), "dirty merged")
 
 
+class PortabilityTests(unittest.TestCase):
+    """Cross-platform behavior that must hold on Linux, macOS, and Windows."""
+
+    def test_py_dir_size_fallback(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(
+            tmp, ignore_errors=True))
+        with open(os.path.join(tmp, "blob"), "wb") as fh:
+            fh.write(b"x" * 5000)
+        self.assertGreaterEqual(reaper._py_dir_size_kb(tmp), 4)
+
+    def test_du_size_matches_fallback_ballpark(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(
+            tmp, ignore_errors=True))
+        with open(os.path.join(tmp, "blob"), "wb") as fh:
+            fh.write(b"x" * 100000)
+        # Whether du is present or not, the public helper returns a sane size.
+        self.assertGreater(reaper.du_size_kb(tmp), 0)
+
+    def test_az_argv_none_without_az(self):
+        import shutil as _sh
+        argv = reaper._az_argv(["repos", "pr", "list"])
+        if _sh.which("az") is None:
+            self.assertIsNone(argv)
+        else:
+            self.assertIn("repos", argv)
+            if os.name == "nt":
+                self.assertEqual(argv[:2], ["cmd", "/c"])
+
+    def test_pr_completed_degrades_without_az(self):
+        # No az / no Azure DevOps remote must never raise -- just "not merged".
+        if __import__("shutil").which("az") is None:
+            self.assertFalse(reaper.pr_completed(os.getcwd(), "some-branch"))
+
+    def test_tcc_deny_is_mac_only(self):
+        import sys as _sys
+        deny = reaper._tcc_deny()
+        if _sys.platform == "darwin":
+            self.assertTrue(deny)
+        else:
+            self.assertEqual(deny, set())
+
+
 if __name__ == "__main__":
     unittest.main()

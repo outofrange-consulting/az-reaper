@@ -9,13 +9,19 @@ on:
 
 jobs:
   test:
-    name: Engine tests (Python ${{ matrix.python-version }})
+    name: Engine tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ['3.9', '3.11']
+
+    # Use bash everywhere (Git Bash is present on Windows runners) so the glob
+    # and 'ls' steps behave identically across platforms.
+    defaults:
+      run:
+        shell: bash
 
     steps:
     - name: Checkout code
