@@ -22,15 +22,26 @@ AGE      SIZE  STATUS    BRANCH                 PATH
 
 Worktrees are wonderful — until you have forty of them. Tools like [Conductor](https://conductor.build), `git worktree add`, and various AI agents scatter checkouts all over your disk, and `git worktree prune` only cleans up the ones whose directories are *already gone*. `az-reaper` finds the living-but-forgotten ones.
 
-## Why a standalone script, not an `az extension`?
+## Two ways to use it
 
-Azure CLI extensions are Python wheels installed with `az extension add`. The
-heart of this tool, though, is scanning **local** git worktrees — the only thing
-it asks Azure DevOps is "was this branch's PR completed?". So `az-reaper` ships
-as a single portable Bash script that *pairs with* the `az` CLI (it shells out to
-`az repos pr list` for the `--check-prs` signal) rather than living inside it.
-You get the same fast, dependency-light, macOS/Linux-portable tool, plus Azure
-DevOps awareness when you want it.
+This repo ships **two** front-ends over the same idea, so you can pick whichever
+fits your setup:
+
+1. **Standalone Bash script** (`./az-reaper`) — zero install beyond dropping it on
+   your `PATH`, fast, dependency-light, macOS/Linux-portable. It *pairs with* the
+   `az` CLI, shelling out to `az repos pr list` only for the `--check-prs` signal.
+   This is what the rest of this README documents.
+2. **A real Azure CLI extension** (`az reaper`) — a proper Python `azext_reaper`
+   package installable with `az extension add`, exposing `az reaper list` and
+   `az reaper reap`. See [`azext_reaper/README.md`](azext_reaper/README.md). Its
+   engine (`azext_reaper/_reaper.py`) is a faithful, azure-cli-free port of this
+   script and has its own unit tests.
+
+Why a script at all, given Azure CLI extensions are Python wheels? Because the
+heart of this tool is scanning **local** git worktrees — the only thing it asks
+Azure DevOps is "was this branch's PR completed?" — so a portable script is the
+lightest possible way to get the job done, with the `az reaper` extension there
+when you'd rather stay inside `az`.
 
 ## Features
 

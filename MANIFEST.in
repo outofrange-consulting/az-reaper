@@ -1,0 +1,4 @@
+include azext_reaper/azext_metadata.json
+include azext_reaper/README.md
+include LICENSE
+recursive-include azext_reaper *.py
