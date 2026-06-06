@@ -21,7 +21,7 @@ jobs:
         sudo apt-get install -y jq shellcheck
 
     - name: Run shellcheck
-      run: shellcheck --severity=warning gh-reaper
+      run: shellcheck --severity=warning az-reaper tests/test.sh
 
     - name: Run tests
       run: |
@@ -46,22 +46,19 @@ jobs:
           ## Installation
 
           ```bash
-          gh extension install ai-ecoverse/gh-reaper
+          # Download the script and put it on your PATH
+          curl -fsSL https://raw.githubusercontent.com/outofrange-consulting/az-reaper/${{ github.ref_name }}/az-reaper -o /usr/local/bin/az-reaper
+          chmod +x /usr/local/bin/az-reaper
           ```
 
-          ## Upgrade
-
-          ```bash
-          gh extension upgrade reaper
-          ```
-
-          See the [README](https://github.com/ai-ecoverse/gh-reaper) for full documentation.
+          See the [README](https://github.com/outofrange-consulting/az-reaper) for full documentation.
 
           ### Requirements
 
           - `git`
           - `find`, `du`, `stat`, `awk` (standard on macOS and Linux)
           - `jq` (only for `--json`)
+          - Azure DevOps CLI: `az` + the `azure-devops` extension (only for `--check-prs`)
           - Bash 4.0 or higher
         draft: false
         prerelease: false

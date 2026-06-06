@@ -1,30 +1,35 @@
-# Contributing to gh-reaper
+# Contributing to az-reaper
 
 Thanks for helping tend the fields! 🌾
 
 ## Development
 
-`gh-reaper` is a single Bash script (`gh-reaper`) plus a test suite. There's no
+`az-reaper` is a single Bash script (`az-reaper`) plus a test suite. There's no
 build step.
 
 ```bash
-git clone https://github.com/ai-ecoverse/gh-reaper
-cd gh-reaper
-./gh-reaper --help
+git clone https://github.com/outofrange-consulting/az-reaper
+cd az-reaper
+./az-reaper --help
 ```
 
-To run it as a real extension from your working copy:
+To run it from your working copy, just call the script directly, or drop it on
+your `PATH`:
 
 ```bash
-gh extension install .
+ln -s "$PWD/az-reaper" /usr/local/bin/az-reaper
 ```
+
+The only Azure DevOps touchpoint is `--check-prs`, which shells out to
+`az repos pr list`. Everything else is local `git`, so you can develop and test
+the bulk of the tool entirely offline.
 
 ## Before you open a PR
 
 1. **Lint** with ShellCheck (warnings are treated as errors in CI):
 
    ```bash
-   shellcheck --severity=warning gh-reaper tests/test.sh
+   shellcheck --severity=warning az-reaper tests/test.sh
    ```
 
    Or install the pre-commit hook: `pre-commit install`.
@@ -45,10 +50,13 @@ gh extension install .
   `TCC_DENY` and must stay comprehensive.
 - Safety first: anything that could lose work (`dirty`, `unpushed`, `orphan`) must
   stay behind `--force`.
+- The Azure DevOps integration must stay **optional and offline-degrading**: if
+  `az` is absent or the repo has no Azure DevOps remote, `az-reaper` must still
+  list and reap based on the local `git` signals alone.
 - Match the surrounding style; update the README and CHANGELOG with user-facing changes.
 
 ## Reporting bugs
 
 Open an issue with your OS, `git --version`, the command you ran, and what you
-expected versus what happened. A `gh reaper --json --dry-run` snippet of the
+expected versus what happened. An `az-reaper --json --dry-run` snippet of the
 affected worktree (paths redacted as you like) helps a lot.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Test suite for gh-reaper.
+# Test suite for az-reaper.
 # Runs structural checks plus end-to-end worktree sandboxes: discovery,
 # classification (clean/dirty/unpushed/merged), the gitignore-aware age
 # signal, JSON output, dry-run safety, and real reaping.
@@ -13,7 +13,7 @@ RUN=0; PASS=0; FAIL=0
 # Resolve repo root (this script lives in tests/).
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-REAPER="$ROOT/gh-reaper"
+REAPER="$ROOT/az-reaper"
 
 ok()   { printf "${GREEN}PASS${NC} %s\n" "$1"; PASS=$((PASS+1)); }
 no()   { printf "${RED}FAIL${NC} %s\n  -> %s\n" "$1" "$2"; FAIL=$((FAIL+1)); }
@@ -37,7 +37,7 @@ check; grep -q "^set -euo pipefail" "$REAPER" && ok "strict mode" || no "strict 
 check; grep -q 'VERSION=' "$REAPER" && grep -q 'EXTENSION_NAME=' "$REAPER" && ok "metadata present" || no "metadata present" "missing VERSION/EXTENSION_NAME"
 
 check
-if out="$("$REAPER" --version 2>&1)" && [[ "$out" == *"gh-reaper version"* ]]; then
+if out="$("$REAPER" --version 2>&1)" && [[ "$out" == *"az-reaper version"* ]]; then
     ok "--version"
 else
     no "--version" "$out"

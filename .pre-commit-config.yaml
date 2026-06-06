@@ -4,5 +4,5 @@ repos:
     hooks:
       - id: shellcheck
         name: ShellCheck
-        files: '\.sh$|gh-reaper$'
+        files: '\.sh$|az-reaper$'
         args: ['--severity=warning']

@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 #
-# gh-reaper - GitHub CLI extension that harvests stale git worktrees
-# Version: 1.5.1
-# https://github.com/ai-ecoverse/gh-reaper
+# az-reaper - Azure DevOps companion CLI that harvests stale git worktrees
+# Version: 2.0.0
+# https://github.com/outofrange-consulting/az-reaper
 #
 # Seasons don't fear the reaper. Nor do your forgotten worktrees -- until now.
 # Scans a curated set of developer directories for linked git worktrees,
 # reports how long they've been gathering dust and how much disk they hold,
-# then offers to reap the ones you've left behind.
+# then offers to reap the ones you've left behind. Pairs with the Azure DevOps
+# CLI (`az repos`) to detect branches whose pull request was already completed
+# (merged) on Azure DevOps -- a strong, age-independent "this work is done" signal.
 
 set -euo pipefail
 
-VERSION="1.5.1"
-EXTENSION_NAME="gh-reaper"
+VERSION="2.0.0"
+EXTENSION_NAME="az-reaper"
 
 # Absolute path to this script, so we can re-invoke ourselves as parallel
 # inspection workers (see the --__inspect dispatch at the bottom).
@@ -69,12 +71,12 @@ show_version() {
 
 show_help() {
     cat <<EOF
-${C_BOLD}gh reaper${C_RESET} - harvest stale git worktrees
+${C_BOLD}az-reaper${C_RESET} - harvest stale git worktrees (Azure DevOps companion)
 
   ${C_DIM}"All our times have come / Here but now they're gone"${C_RESET}
 
 USAGE:
-  gh reaper [OPTIONS] [PATH...]
+  az-reaper [OPTIONS] [PATH...]
 
 DESCRIPTION:
   Scans your developer directories for linked git worktrees and shows when each
@@ -87,17 +89,21 @@ DESCRIPTION:
   or last commit) -- so a routine 'npm install' or build no longer resets a
   worktree's apparent age. Each worktree is also checked for whether its work is
   already MERGED into the repo's default branch -- a far stronger "done" signal
-  than age alone.
+  than age alone. With --check-prs it also asks Azure DevOps whether the branch's
+  pull request was already COMPLETED (merged) there.
 
 OPTIONS:
   -r, --reap           Delete worktrees (interactive unless --yes). Without this,
-                       gh reaper only lists -- it never removes anything.
+                       az-reaper only lists -- it never removes anything.
   -d, --min-age DAYS   Only show worktrees untouched for at least DAYS (default: 0)
   -s, --min-size MB    Only show worktrees at least MB megabytes in size (default: 0)
   -m, --merged         Only show worktrees whose HEAD is merged into the default
                        branch (with --reap, sweep exactly the done ones)
-      --check-prs      For non-merged branches, ask 'gh' whether their PR was
-                       merged (catches squash-merges; needs gh auth + network)
+      --check-prs      For non-merged branches, ask the Azure DevOps CLI
+                       ('az repos pr list') whether their pull request was
+                       completed/merged -- catches squash-merges that rewrite
+                       history. Needs 'az' + the 'azure-devops' extension, an
+                       Azure DevOps remote, auth, and network.
       --no-ignore-locks  Count dependency lock-file changes (package-lock.json,
                        yarn.lock, Cargo.lock, ...) as dirty. By default a worktree
                        whose only change is regenerable lock churn is not dirty.
@@ -115,7 +121,7 @@ OPTIONS:
 
 STATUS FLAGS:
   ${C_GREEN}merged${C_RESET}     HEAD is already in the default branch -- done, safe to reap
-  ${C_GREEN}pr-merged${C_RESET}  Branch's pull request was merged (squash-merge; --check-prs)
+  ${C_GREEN}pr-merged${C_RESET}  Branch's Azure DevOps pull request was completed (--check-prs)
   ${C_GREEN}clean${C_RESET}      No local changes; HEAD exists on a remote -- safe to reap
   ${C_YELLOW}dirty${C_RESET}      Uncommitted or untracked changes present
   ${C_YELLOW}unpushed${C_RESET}   Commits that exist nowhere on a remote
@@ -123,24 +129,24 @@ STATUS FLAGS:
 
 EXAMPLES:
   # Survey forgotten worktrees -- read-only, the default
-  gh reaper
+  az-reaper
 
   # Anything untouched for 30+ days and bigger than 100 MB
-  gh reaper --min-age 30 --min-size 100
+  az-reaper --min-age 30 --min-size 100
 
   # Scan a specific spot, then reap interactively
-  gh reaper ~/work/monorepo --reap
+  az-reaper ~/work/monorepo --reap
 
   # Reap everything 2+ weeks old, no prompts
-  gh reaper --min-age 14 --reap --yes
+  az-reaper --min-age 14 --reap --yes
 
-  # Sweep only worktrees whose work is already merged (incl. squashed PRs)
-  gh reaper --merged --check-prs --reap
+  # Sweep only worktrees whose Azure DevOps PR is already completed (squash-merges)
+  az-reaper --merged --check-prs --reap
 
   # Machine-wide survey (still skips TCC-protected dirs)
-  gh reaper --all
+  az-reaper --all
 
-More cowbell: https://github.com/ai-ecoverse/gh-reaper
+More cowbell: https://github.com/outofrange-consulting/az-reaper
 EOF
 }
 
@@ -426,17 +432,21 @@ inspect_marker() {
         fi
 
         # Optional, network: a squash/rebase-merged branch is not an ancestor of
-        # the default branch, yet its PR is merged. Only consult gh for branches
-        # we could not confirm offline, and only when asked (--check-prs).
+        # the default branch, yet its PR was completed (merged) on Azure DevOps.
+        # Only consult the Azure DevOps CLI for branches we could not confirm
+        # offline, and only when asked (--check-prs). Run from inside the worktree
+        # so 'az repos' auto-detects the org/project/repository from the remote.
+        # Azure DevOps calls a merged PR "completed".
         if [ "$merged" = 0 ] && [ "${REAPER_CHECK_PRS:-0}" = 1 ] \
-           && command -v gh >/dev/null 2>&1; then
+           && command -v az >/dev/null 2>&1; then
             case "$branch" in
                 detached@*|'') ;;  # no branch -> no PR to look up
                 *)
                     local pr_n
                     pr_n="$( cd "$wt" 2>/dev/null \
-                        && gh pr list --head "$branch" --state merged \
-                             --limit 1 --json number -q 'length' 2>/dev/null )"
+                        && az repos pr list --source-branch "$branch" \
+                             --status completed --query 'length(@)' \
+                             -o tsv 2>/dev/null )"
                     case "$pr_n" in ''|*[!0-9]*) pr_n=0 ;; esac
                     [ "$pr_n" -gt 0 ] && prmerged=1
                     ;;
@@ -679,7 +689,7 @@ main() {
 }
 
 # Internal parallel-inspection worker (not a public interface). main() re-invokes
-# this script via xargs as `gh-reaper --__inspect <marker>...`; each call writes
+# this script via xargs as `az-reaper --__inspect <marker>...`; each call writes
 # one TSV record per valid worktree to $REAPER_OUT_DIR/$$.tsv (or stdout).
 if [ "${1:-}" = "--__inspect" ]; then
     if stat --version >/dev/null 2>&1; then STAT_GNU=1; else STAT_GNU=0; fi

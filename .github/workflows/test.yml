@@ -28,7 +28,7 @@ jobs:
       run: brew install jq shellcheck
 
     - name: Run shellcheck
-      run: shellcheck --severity=warning gh-reaper
+      run: shellcheck --severity=warning az-reaper tests/test.sh
 
     - name: Run test suite
       run: |
@@ -37,9 +37,9 @@ jobs:
 
     - name: Verify script structure
       run: |
-        head -n 1 gh-reaper | grep -q "#!/usr/bin/env bash" || { echo "Bad shebang"; exit 1; }
-        grep -q "^set -euo pipefail" gh-reaper || { echo "Missing 'set -euo pipefail'"; exit 1; }
-        grep -q 'VERSION=' gh-reaper || { echo "Missing VERSION"; exit 1; }
-        grep -q 'EXTENSION_NAME=' gh-reaper || { echo "Missing EXTENSION_NAME"; exit 1; }
-        grep -q "check_dependencies" gh-reaper || { echo "Missing check_dependencies"; exit 1; }
+        head -n 1 az-reaper | grep -q "#!/usr/bin/env bash" || { echo "Bad shebang"; exit 1; }
+        grep -q "^set -euo pipefail" az-reaper || { echo "Missing 'set -euo pipefail'"; exit 1; }
+        grep -q 'VERSION=' az-reaper || { echo "Missing VERSION"; exit 1; }
+        grep -q 'EXTENSION_NAME=' az-reaper || { echo "Missing EXTENSION_NAME"; exit 1; }
+        grep -q "check_dependencies" az-reaper || { echo "Missing check_dependencies"; exit 1; }
         echo "All structural checks passed!"

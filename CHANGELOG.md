@@ -1,7 +1,24 @@
 # Changelog
 
-All notable changes to `gh-reaper` are documented here.
+All notable changes to `az-reaper` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+## [2.0.0] - 2026-06-06
+
+### Changed
+- **Rebranded `gh-reaper` → `az-reaper`.** The tool is now a companion to the
+  **Azure DevOps CLI** (`az`) instead of the GitHub CLI (`gh`). The worktree
+  engine — discovery, age/size, `clean`/`dirty`/`unpushed`/`merged`/`orphan`
+  classification, parallel inspection, and safe reaping — is unchanged. It stays
+  a single portable Bash script; install by putting `az-reaper` on your `PATH`
+  (Azure CLI extensions are Python wheels, so this ships as a standalone CLI
+  rather than an `az extension add` package).
+- **`--check-prs` now queries Azure DevOps** via `az repos pr list --status
+  completed` (run from inside the worktree so org/project/repository are
+  auto-detected from the remote), replacing `gh pr list --state merged`. Azure
+  DevOps calls a merged PR "completed"; matching branches are tagged `pr-merged`
+  exactly as before. The check is optional and degrades offline: without `az` or
+  an Azure DevOps remote, `az-reaper` still lists and reaps on local git signals.
 
 ## [1.5.1] - 2026-06-05
 
