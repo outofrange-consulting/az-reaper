@@ -2,3 +2,10 @@
 .sandbox/
 *.tmp
 .DS_Store
+
+# Python build artifacts (the az reaper extension lives on its own branch)
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.egg-info/
