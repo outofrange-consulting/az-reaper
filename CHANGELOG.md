@@ -3,6 +3,22 @@
 All notable changes to `az-reaper` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- **A real Azure CLI extension** (`azext_reaper`, command `az reaper`). Installable
+  with `az extension add`, it exposes `az reaper list` (read-only) and
+  `az reaper reap`, mirroring the script's filters/flags
+  (`--path/--all/--min-age/--min-size/--merged/--check-prs/--no-ignore-locks/--jobs`,
+  plus `--yes/--force/--prune` on reap). The engine (`azext_reaper/_reaper.py`) is
+  a faithful, azure-cli-free Python port of the Bash logic — same discovery,
+  gitignore-aware age signal, classification, lock-file handling, and Azure DevOps
+  `--check-prs` via `az repos pr list --status completed` — with parallel
+  inspection via a thread pool.
+- Azure-cli-free unit tests for the engine (`azext_reaper/tests/test_reaper_core.py`)
+  and a CI workflow that byte-compiles, lints (flake8), runs the engine tests, and
+  builds the wheel on Linux and macOS.
+
 ## [2.0.0] - 2026-06-06
 
 ### Changed

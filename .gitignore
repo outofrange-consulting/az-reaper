@@ -2,3 +2,12 @@
 .sandbox/
 *.tmp
 .DS_Store
+
+# Python / Azure CLI extension build artifacts
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
