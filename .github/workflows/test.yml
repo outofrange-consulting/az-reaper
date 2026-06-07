@@ -35,6 +35,10 @@ jobs:
       run: brew install jq shellcheck
 
     - name: Run shellcheck
+      # shellcheck is a static, OS-independent linter (already covered by the
+      # Ubuntu and macOS jobs) and is not preinstalled on Windows runners. The
+      # Windows job's job is to actually run the script + test suite under Git Bash.
+      if: matrix.os != 'windows-latest'
       run: shellcheck --severity=warning az-reaper tests/test.sh
 
     - name: Run test suite
