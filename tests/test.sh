@@ -113,8 +113,11 @@ else
         [ "$n" = 4 ] && ok "discovers 4 worktrees (JSON)" || no "discovers 4 worktrees (JSON)" "got: $n"
 
         check
-        statuses="$(printf '%s' "$json" | jq -r '.[].status' 2>/dev/null | sort | tr '\n' ',')"
-        [ "$statuses" = "clean,dirty,merged,unpushed," ] \
+        # Sort + join inside jq, not via the shell's `sort`/`tr`: on Windows
+        # (Git Bash) `sort` can resolve to Windows sort.exe and emit CRLF, which
+        # would leave a stray \r on each status. jq keeps this OS-independent.
+        statuses="$(printf '%s' "$json" | jq -r '[.[].status] | sort | join(",")' 2>/dev/null)"
+        [ "$statuses" = "clean,dirty,merged,unpushed" ] \
             && ok "classifies clean/dirty/unpushed/merged" \
             || no "classifies clean/dirty/unpushed/merged" "got: $statuses"
 
